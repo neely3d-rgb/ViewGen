@@ -9726,8 +9726,9 @@ void SUE_GenPanel::Apply3DAssetExportSettings(UStaticMesh* Mesh, const FString& 
 		}
 	}
 
-#if ENGINE_MAJOR_VERSION >= 5
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 	// --- Nanite ---
+	// GetNaniteSettings / SetNaniteSettings were added in UE 5.7.
 	if (bEnableNanite)
 	{
 		// Check if Nanite is already enabled (Interchange GLB importer often builds
