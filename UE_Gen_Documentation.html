@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UE Gen - Plugin Documentation v1.0.0 | &copy; 2026 Creative Story Lab Inc</title>
+<style>
+  :root {
+    --dark-bg: #1a1a2e;
+    --accent-blue: #3a86ff;
+    --accent-gold: #e8a838;
+    --mid-gray: #7f8c8d;
+    --code-bg: #f4f6f8;
+    --table-header: #2c3e50;
+    --table-alt: #f8f9fa;
+    --section-line: #3a86ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    color: #222;
+    line-height: 1.6;
+    background: #fff;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 24px 60px;
+  }
+  /* Cover */
+  .cover-banner {
+    background: var(--dark-bg);
+    margin: 0 -24px;
+    padding: 40px 48px 24px;
+    border-bottom: 4px solid var(--accent-gold);
+  }
+  .cover-banner h1 {
+    font-size: 42px;
+    color: #fff;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .cover-banner .subtitle {
+    font-size: 18px;
+    color: #ccc;
+    margin-bottom: 6px;
+  }
+  .cover-banner .version {
+    font-size: 14px;
+    color: var(--accent-gold);
+    font-weight: 600;
+  }
+  .cover-desc {
+    font-size: 15px;
+    color: #555;
+    margin: 24px 0 16px;
+    line-height: 1.7;
+  }
+  .cover-meta {
+    font-size: 14px;
+    line-height: 2;
+    margin-bottom: 32px;
+  }
+  .cover-meta b { color: #333; }
+
+  /* TOC */
+  .toc {
+    background: var(--code-bg);
+    border-left: 4px solid var(--accent-blue);
+    padding: 20px 28px;
+    margin: 32px 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .toc h2 {
+    font-size: 22px;
+    color: var(--dark-bg);
+    margin-bottom: 12px;
+  }
+  .toc ol {
+    list-style: none;
+    counter-reset: toc;
+    padding: 0;
+  }
+  .toc li {
+    counter-increment: toc;
+    margin: 4px 0;
+  }
+  .toc li a {
+    color: var(--dark-bg);
+    text-decoration: none;
+    font-size: 14px;
+    transition: color 0.2s;
+  }
+  .toc li a:hover { color: var(--accent-blue); }
+  .toc li a::before {
+    content: counter(toc) ". ";
+    font-weight: 600;
+    color: var(--accent-blue);
+  }
+
+  /* Headings */
+  h2.section-title {
+    font-size: 28px;
+    color: var(--dark-bg);
+    margin: 48px 0 8px;
+    padding-top: 16px;
+    border-top: 3px solid var(--section-line);
+  }
+  h3 {
+    font-size: 20px;
+    color: var(--accent-blue);
+    margin: 28px 0 10px;
+  }
+  h4 {
+    font-size: 15px;
+    color: #34495e;
+    margin: 20px 0 8px;
+    font-weight: 600;
+  }
+
+  /* Body text */
+  p { margin: 8px 0 12px; text-align: justify; font-size: 15px; }
+  ul.features { padding-left: 22px; margin: 8px 0 16px; }
+  ul.features li {
+    margin: 6px 0;
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+  ul.features li b { color: #222; }
+
+  /* Code */
+  code {
+    font-family: 'Consolas', 'Fira Code', 'Courier New', monospace;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+    color: var(--table-header);
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-size: 14px;
+  }
+  thead th {
+    background: var(--table-header);
+    color: #fff;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #e8e8e8;
+    vertical-align: top;
+  }
+  tbody tr:nth-child(even) { background: var(--table-alt); }
+  tbody tr:hover { background: #eef3ff; }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    color: var(--mid-gray);
+    font-size: 12px;
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid #ddd;
+  }
+
+  @media print {
+    body { max-width: none; padding: 0; }
+    .cover-banner { margin: 0; }
+    h2.section-title { page-break-before: always; }
+    table { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ COVER ═══════════════ -->
+<div class="cover-banner">
+  <h1>UE Gen</h1>
+  <div class="subtitle">AI Viewport Generator for Unreal Engine</div>
+  <div class="version">Plugin Documentation v1.0.0</div>
+</div>
+
+<p class="cover-desc">
+  Comprehensive guide for users, artists, and developers working with the
+  UE Gen AI Viewport Generator plugin for Unreal Engine.
+</p>
+
+<div class="cover-meta">
+  <b>Author:</b> C. Michael Neely<br>
+  <b>Version:</b> 1.0.0 (Beta)<br>
+  <b>Engine:</b> Unreal Engine 5.7<br>
+  <b>Platforms:</b> Windows, Linux, macOS<br>
+  <b>&copy; 2026 Creative Story Lab Inc</b>
+</div>
+
+<!-- ═══════════════ TOC ═══════════════ -->
+<div class="toc">
+  <h2>Table of Contents</h2>
+  <ol>
+    <li><a href="#s1">Introduction and Overview</a></li>
+    <li><a href="#s2">Installation and Setup</a></li>
+    <li><a href="#s3">User Interface Overview</a></li>
+    <li><a href="#s4">Capturing the Viewport</a></li>
+    <li><a href="#s5">Generation Modes</a></li>
+    <li><a href="#s6">The Graph Editor</a></li>
+    <li><a href="#s7">UE Source Nodes</a></li>
+    <li><a href="#s8">ComfyUI Integration</a></li>
+    <li><a href="#s9">External API Integrations</a></li>
+    <li><a href="#s10">Video Generation</a></li>
+    <li><a href="#s11">3D Model Pipeline</a></li>
+    <li><a href="#s12">LoRA Management</a></li>
+    <li><a href="#s13">Settings Reference</a></li>
+    <li><a href="#s14">Architecture and Technical Reference</a></li>
+    <li><a href="#s15">Keyboard Shortcuts and Tips</a></li>
+  </ol>
+</div>
+
+<!-- ═══════════════ 1. INTRODUCTION ═══════════════ -->
+<h2 class="section-title" id="s1">1. Introduction and Overview</h2>
+
+<p>
+  UE Gen is an editor plugin for Unreal Engine that bridges your 3D viewport with AI image
+  and video generation. It captures the editor viewport, extracts depth maps and camera metadata,
+  and sends this data to generation backends (ComfyUI, Gemini, Kling, and more) to produce
+  AI-generated imagery that matches your scene's composition, lighting, and camera angle.
+</p>
+<p>
+  The plugin includes a full node-based graph editor for building custom ComfyUI workflows,
+  support for LoRA models, a result gallery with history, and a 3D model pipeline that can convert
+  generated images into importable static meshes via the Meshy API.
+</p>
+
+<h3>Key Features</h3>
+<ul class="features">
+  <li><b>Viewport Capture</b> &mdash; Captures the active editor viewport at native resolution with full camera metadata (FOV, focal length, position, rotation).</li>
+  <li><b>Depth Map Extraction</b> &mdash; Renders a linearized depth pass from the viewport camera for use as a ControlNet guide.</li>
+  <li><b>Multiple Generation Modes</b> &mdash; img2img, depth+prompt, text-only, Gemini, and Kling pipelines, each with a master Reference Adherence slider.</li>
+  <li><b>Node Graph Editor</b> &mdash; Interactive drag-and-drop graph editor supporting all ComfyUI node types plus custom UE source nodes.</li>
+  <li><b>Video Generation</b> &mdash; Image-to-video via Kling Video, Wan I2V, and Google Veo3.</li>
+  <li><b>3D Model Pipeline</b> &mdash; Convert generated images to 3D meshes via Meshy, import as UE assets with collision and Nanite support.</li>
+  <li><b>LoRA Support</b> &mdash; Add, remove, and weight-adjust LoRA models for fine-tuned generation styles.</li>
+  <li><b>Result Gallery</b> &mdash; Browse, select, and navigate generation history with thumbnail previews.</li>
+  <li><b>Workflow Save/Load</b> &mdash; Save and load graph editor workflows as JSON files, including ComfyUI template import.</li>
+  <li><b>Cost Estimation</b> &mdash; Shows estimated API costs in the status bar before generation starts, with user-configurable pricing tables.</li>
+</ul>
+
+<!-- ═══════════════ 2. INSTALLATION ═══════════════ -->
+<h2 class="section-title" id="s2">2. Installation and Setup</h2>
+
+<h3>Plugin Installation</h3>
+<p>
+  Place the <code>UE_Gen</code> folder into your project's <code>Plugins/</code> directory.
+  Regenerate project files, recompile the module, and enable the plugin via Project Settings.
+  The plugin registers a toolbar button and a Window menu entry labeled "UE Gen".
+</p>
+
+<h3>External Requirements</h3>
+<p>
+  UE Gen communicates with a ComfyUI server for most generation pipelines. The server must be
+  running and accessible at the configured URL (default: <code>http://127.0.0.1:8188</code>).
+  Certain generation modes require specific ComfyUI custom nodes to be installed.
+</p>
+
+<table>
+  <thead><tr><th>Generation Mode</th><th>Required ComfyUI Custom Nodes</th></tr></thead>
+  <tbody>
+    <tr><td>img2img / Depth+Prompt</td><td>ControlNet nodes, KSampler (built-in)</td></tr>
+    <tr><td>Gemini (Nano Banana 2)</td><td>NanoBanana2AIO custom node package</td></tr>
+    <tr><td>Kling Image 3.0</td><td>KlingImageGenerationNode</td></tr>
+    <tr><td>Flux Pipeline</td><td>x-flux-comfyui custom node package</td></tr>
+    <tr><td>Video (Kling/Wan/Veo3)</td><td>KlingImage2VideoNode, WanImageToVideoApi, Veo3VideoGenerationNode</td></tr>
+    <tr><td>Meshy 3D</td><td>MeshyImageToModelNode</td></tr>
+  </tbody>
+</table>
+
+<h3>API Keys</h3>
+<p>Some features require API keys configured in the UE Gen panel's Settings section:</p>
+
+<h4>ComfyUI API Key (optional)</h4>
+<p>
+  Required for paid API nodes such as Nano Banana 2 and other partner nodes available through the ComfyUI platform.
+  If you only use local ComfyUI nodes (Stable Diffusion, ControlNet, etc.), you do not need this key.
+</p>
+<p><b>How to get your ComfyUI API key:</b></p>
+<ol>
+  <li>Go to <a href="https://platform.comfy.org" target="_blank">platform.comfy.org</a> and create an account (or sign in).</li>
+  <li>Verify your email address.</li>
+  <li>Navigate to <a href="https://platform.comfy.org/profile/api-keys" target="_blank">platform.comfy.org/profile/api-keys</a>.</li>
+  <li>Click <b>Create API Key</b> and copy the generated key. Format: <code>comfyui-xxxxx</code></li>
+  <li>Paste the key into the <b>ComfyUI API Key</b> field in UE Gen's Settings section.</li>
+</ol>
+<p>
+  Note: Paid API nodes require credits on your ComfyUI account. You can purchase credits at
+  <a href="https://platform.comfy.org" target="_blank">platform.comfy.org</a> under your account settings.
+</p>
+
+<h4>Meshy API Key</h4>
+<p>
+  Required for Image-to-3D and Text-to-3D model generation via the Meshy service.
+</p>
+<p><b>How to get your Meshy API key:</b></p>
+<ol>
+  <li>Go to <a href="https://www.meshy.ai" target="_blank">meshy.ai</a> and create an account (or sign in).</li>
+  <li>Navigate to your account settings and locate the API section.</li>
+  <li>Generate a new API key. Format: <code>msy-XXXX</code></li>
+  <li>Paste the key into the <b>Meshy API Key</b> field in UE Gen's Settings section.</li>
+</ol>
+
+<!-- ═══════════════ 3. UI OVERVIEW ═══════════════ -->
+<h2 class="section-title" id="s3">3. User Interface Overview</h2>
+
+<p>
+  The UE Gen panel is a nomad tab accessible via the toolbar button or Window &gt; UE Gen.
+  The interface is divided into several key areas.
+</p>
+
+<h3>Layout Structure</h3>
+<p>
+  The panel is split into a top section and bottom section via a vertical splitter. The top section
+  contains three columns: input thumbnails (left), main preview (center), and result gallery (right).
+  The bottom section contains the prompt inputs, LoRA panel, settings, and the graph editor.
+</p>
+
+<h4>Toolbar</h4>
+<p>
+  The toolbar at the top provides three primary actions: <b>Capture Viewport</b> captures the active
+  editor viewport and depth map, populating the thumbnails. <b>Generate</b> sends the captured data
+  and prompts to the configured generation backend. <b>Cancel</b> aborts an in-flight generation request.
+</p>
+
+<h4>Tab Switcher</h4>
+<p>
+  Below the toolbar, tabs switch between <b>Image Generation</b> and <b>Video Generation</b> modes.
+  Each tab has its own layout and controls tailored to the generation type.
+</p>
+
+<h4>Thumbnail Panel</h4>
+<p>
+  The left column displays thumbnails for the most recent viewport capture and depth map. These update
+  when you click Capture Viewport. The thumbnails reflect the viewport's native aspect ratio.
+</p>
+
+<h4>Preview Panel</h4>
+<p>
+  The center area shows the most recently generated image at full size with a progress bar during
+  generation. Navigate between results using the gallery or arrow controls.
+</p>
+
+<h4>Result Gallery</h4>
+<p>
+  The right column displays a scrollable list of all generated images in reverse chronological order.
+  The currently selected result appears at full brightness with a gold border, while unselected results
+  are dimmed. Click any thumbnail to display it in the preview panel.
+</p>
+
+<h4>Status Bar</h4>
+<p>
+  The bottom of the panel shows the current status (Ready, Capturing, Generating, etc.) and a progress
+  bar with percentage during active generation.
+</p>
+
+<!-- ═══════════════ 4. VIEWPORT CAPTURE ═══════════════ -->
+<h2 class="section-title" id="s4">4. Capturing the Viewport</h2>
+
+<p>
+  Clicking <b>Capture Viewport</b> reads the active level editor viewport's backbuffer at native
+  resolution and simultaneously renders a depth map from the same camera position. Both are displayed
+  as thumbnails and stored for use during generation.
+</p>
+
+<h3>Camera Metadata</h3>
+<p>
+  The capture also extracts camera metadata from the viewport client, including horizontal FOV, world
+  position, rotation, and a calculated 35mm-equivalent focal length. When <b>Auto Camera Prompt</b>
+  is enabled in settings, this metadata is automatically converted into a natural-language description
+  and injected into your prompt.
+</p>
+<p>
+  Example auto-generated descriptions: "shot with wide-angle 24mm lens, high-angle shot looking down,
+  moderate perspective, widescreen 16:9 framing."
+</p>
+
+<h3>Depth Map</h3>
+<p>
+  The depth pass uses a temporary SceneCaptureComponent2D positioned at the viewport camera. It captures
+  scene depth and linearizes it to a grayscale image where white represents close objects and black
+  represents distant objects. The <b>Max Depth Distance</b> setting (default 50,000 Unreal Units)
+  controls the far boundary of the depth mapping.
+</p>
+
+<h3>Capture Reuse</h3>
+<p>
+  During workflow execution, if a viewport or depth capture already exists from a previous Capture
+  Viewport click, the plugin reuses it instead of re-capturing. For depth maps, a re-capture is
+  triggered only if the workflow's max_depth setting differs from the last capture. This allows you
+  to capture once and generate multiple times without the viewport needing to be visible.
+</p>
+
+<!-- ═══════════════ 5. GENERATION MODES ═══════════════ -->
+<h2 class="section-title" id="s5">5. Generation Modes</h2>
+
+<p>
+  UE Gen supports five generation modes, selectable via the Generation Mode setting. Each mode uses
+  a different combination of viewport data, depth maps, and prompts.
+</p>
+
+<table>
+  <thead><tr><th>Mode</th><th>Inputs</th><th>Best For</th></tr></thead>
+  <tbody>
+    <tr><td>img2img</td><td>Viewport image + Prompt + optional Depth</td><td>Refining viewport composition with AI style</td></tr>
+    <tr><td>Depth + Prompt</td><td>Depth map + Prompt (no viewport image)</td><td>Preserving structure while changing visuals entirely</td></tr>
+    <tr><td>Prompt Only</td><td>Text prompt only</td><td>Pure creative generation without viewport reference</td></tr>
+    <tr><td>Gemini</td><td>Optional viewport/depth + Prompt</td><td>Gemini-powered generation with flexible inputs</td></tr>
+    <tr><td>Kling Image 3.0</td><td>Optional viewport + Prompt</td><td>High-quality generation with subject/face fidelity</td></tr>
+  </tbody>
+</table>
+
+<h3>Reference Adherence Slider</h3>
+<p>
+  The master <b>Reference Adherence</b> slider (0.0 to 1.0) controls how closely the generation follows
+  your viewport reference. At 0.0 (Creative), the AI has maximum freedom. At 1.0 (Faithful), the output
+  closely matches the viewport. This single slider maps to multiple underlying parameters depending on the mode.
+</p>
+
+<table>
+  <thead><tr><th>Mode</th><th>At 0.0 (Creative)</th><th>At 0.5 (Balanced)</th><th>At 1.0 (Faithful)</th></tr></thead>
+  <tbody>
+    <tr><td>img2img</td><td>Denoise=0.1, CFG=1, Steps=10</td><td>Denoise=0.55, CFG=7, Steps=30</td><td>Denoise=0.95, CFG=15, Steps=50</td></tr>
+    <tr><td>Depth+Prompt</td><td>CN Weight=0, CFG=1</td><td>CN Weight=1.0, CFG=7</td><td>CN Weight=2.0, CFG=15</td></tr>
+    <tr><td>Prompt Only</td><td>CFG=1, Steps=10</td><td>CFG=7, Steps=30</td><td>CFG=15, Steps=50</td></tr>
+    <tr><td>Gemini</td><td>Thinking: MINIMAL</td><td>&mdash;</td><td>Thinking: HIGH</td></tr>
+    <tr><td>Kling</td><td>Fidelity=0.0</td><td>Fidelity=0.5</td><td>Fidelity=1.0</td></tr>
+  </tbody>
+</table>
+
+<!-- ═══════════════ 6. GRAPH EDITOR ═══════════════ -->
+<h2 class="section-title" id="s6">6. The Graph Editor</h2>
+
+<p>
+  The graph editor is a fully interactive node-based workflow builder embedded in the bottom section of
+  the panel. It supports all ComfyUI node types (discovered dynamically from the server) plus custom UE
+  source nodes for viewport capture, depth, camera data, and more.
+</p>
+
+<h3>Navigation</h3>
+<ul class="features">
+  <li><b>Pan:</b> Right-click drag or middle-mouse drag to move the canvas.</li>
+  <li><b>Zoom:</b> Scroll wheel to zoom in/out, centered on the cursor.</li>
+  <li><b>Fullscreen:</b> Click the Fullscreen button to open the graph in a dedicated window.</li>
+</ul>
+
+<h3>Working with Nodes</h3>
+<ul class="features">
+  <li><b>Add nodes:</b> Right-click on empty canvas space to open the categorized node menu. Type to search.</li>
+  <li><b>Move nodes:</b> Left-click and drag any node to reposition it.</li>
+  <li><b>Select:</b> Left-click a node to select. Shift+click for multi-select. Click-drag in empty space for box selection.</li>
+  <li><b>Delete:</b> Press Delete or Backspace to remove selected nodes.</li>
+  <li><b>Edit values:</b> Click widget fields on a node body to edit parameters (text, numbers, dropdowns).</li>
+</ul>
+
+<h3>Connections</h3>
+<p>
+  Drag from an output pin to a compatible input pin to create a connection. The editor enforces type
+  compatibility (e.g., MODEL outputs can only connect to MODEL inputs). Each input pin accepts only
+  one connection. Double-click a wire to insert a reroute node for visual organization.
+</p>
+
+<h3>Workflow Files</h3>
+<p>
+  The graph editor toolbar provides <b>Save</b>, <b>Save As</b>, and <b>Load</b> buttons. Workflows
+  are stored as JSON files in the plugin's Workflows directory. The Load button accepts both the editor's
+  native format (with positions) and raw ComfyUI API-format workflows exported from ComfyUI's web
+  interface, which are auto-laid out on import.
+</p>
+
+<h3>Execution Feedback</h3>
+<p>
+  During workflow execution, the currently active ComfyUI node is highlighted in yellow in real-time
+  via WebSocket. This gives you visual feedback on which stage of the pipeline is running.
+</p>
+
+<!-- ═══════════════ 7. UE SOURCE NODES ═══════════════ -->
+<h2 class="section-title" id="s7">7. UE Source Nodes</h2>
+
+<p>
+  UE source nodes are special graph nodes unique to this plugin. They represent Unreal Engine data
+  sources and actions that are resolved at export time, converting to standard ComfyUI nodes in the
+  submitted workflow.
+</p>
+
+<table>
+  <thead><tr><th>Node</th><th>Output</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>UE Viewport Capture</td><td>IMAGE</td><td>Captures the editor viewport. Converted to a LoadImage node with the uploaded viewport PNG.</td></tr>
+    <tr><td>UE Depth Map</td><td>IMAGE</td><td>Extracts depth from the viewport camera. Reuses existing capture if available. Converted to LoadImage.</td></tr>
+    <tr><td>UE Camera Data</td><td>STRING</td><td>Injects auto-generated camera metadata (FOV, focal length, angle) into target prompt fields.</td></tr>
+    <tr><td>UE Prompt Adherence</td><td>&mdash;</td><td>Global override: adjusts CFG, steps, and denoise on all KSampler nodes in the graph.</td></tr>
+    <tr><td>UE Image Bridge</td><td>IMAGE</td><td>Saves the upstream image to disk (SaveImage) and passes it through. Creates a disk-based handoff.</td></tr>
+    <tr><td>UE Meshy Import</td><td>&mdash;</td><td>Downloads a Meshy Image-to-3D result and imports it as a UE asset.</td></tr>
+    <tr><td>UE Save 3D Model</td><td>&mdash;</td><td>Downloads a 3D model (GLB/OBJ/FBX) from ComfyUI mesh nodes and imports into UE.</td></tr>
+    <tr><td>UE 3D Loader</td><td>&mdash;</td><td>Browses for a local 3D model file and imports it into the Content Browser.</td></tr>
+    <tr><td>UE 3D Asset Export</td><td>&mdash;</td><td>Downloads generated 3D models and imports as .uasset with collision, Nanite, and placement options.</td></tr>
+  </tbody>
+</table>
+
+<h3>Camera Data Injection</h3>
+<p>
+  The UE Camera Data node has configurable options: <b>format</b> (Natural Language or Structured),
+  <b>position</b> (prepend or append to prompt), and <b>target</b> (positive only or all prompts).
+  The plugin uses tagged markers to prevent duplicate injection across multiple generate clicks and
+  updates stale camera data when the camera moves between captures.
+</p>
+
+<!-- ═══════════════ 8. COMFYUI INTEGRATION ═══════════════ -->
+<h2 class="section-title" id="s8">8. ComfyUI Integration</h2>
+
+<h3>Connection</h3>
+<p>
+  UE Gen communicates with ComfyUI over HTTP and WebSocket. The server URL is configurable (default:
+  <code>http://127.0.0.1:8188</code>). On startup or when triggered, the plugin fetches
+  <code>/object_info</code> to discover all available node types, which populates the graph editor's
+  Add Node menu and the ComfyNodeDatabase singleton.
+</p>
+
+<h3>Workflow Submission Flow</h3>
+<p>The generation pipeline follows these steps:</p>
+<ul class="features">
+  <li><b>1. Export</b> &mdash; The graph editor serializes nodes to ComfyUI API-format JSON, replacing UE source nodes with standard ComfyUI equivalents.</li>
+  <li><b>2. Capture</b> &mdash; Viewport and depth images are captured (or reused) and uploaded via POST <code>/upload/image</code>.</li>
+  <li><b>3. Resolve</b> &mdash; Marker filenames (<code>__UE_VIEWPORT_IMAGE__</code>, etc.) are replaced with actual server filenames.</li>
+  <li><b>4. Inject</b> &mdash; Camera data is injected into target prompt fields if a Camera Data node is present.</li>
+  <li><b>5. Submit</b> &mdash; The workflow is sent via POST <code>/prompt</code>, returning a prompt_id for tracking.</li>
+  <li><b>6. Monitor</b> &mdash; WebSocket messages provide real-time node execution progress. The plugin also polls <code>/history/{id}</code> for completion.</li>
+  <li><b>7. Fetch</b> &mdash; The result image is downloaded via GET <code>/view?filename=...</code> and displayed in the preview panel.</li>
+</ul>
+
+<h3>Node Database</h3>
+<p>
+  The FComfyNodeDatabase singleton caches all node definitions from the server. Each definition includes
+  the node's class_type, category, inputs (with types, defaults, ranges, combo options), and outputs.
+  This data drives the graph editor's Add Node menu, widget rendering, and pin type-checking for connections.
+</p>
+
+<!-- ═══════════════ 9. EXTERNAL APIs ═══════════════ -->
+<h2 class="section-title" id="s9">9. External API Integrations</h2>
+
+<h3>Gemini (Nano Banana 2)</h3>
+<p>
+  Google Gemini image generation is accessed through the NanoBanana2AIO ComfyUI node. It supports
+  multiple model variants, aspect ratios (1:1 through 21:9), resolution tiers (1K/2K/4K), and thinking
+  levels (MINIMAL for speed, HIGH for quality). Viewport and depth images can optionally be provided as references.
+</p>
+
+<h3>Kling Image 3.0</h3>
+<p>
+  Kling AI image generation provides high-quality output with separate fidelity controls for general
+  image content and human subjects. It supports model versions v1.5 through v3, various aspect ratios,
+  and can generate up to 9 images per request. An optional viewport image serves as a reference.
+</p>
+
+<h3>Meshy (Image-to-3D)</h3>
+<p>
+  The Meshy API converts 2D images into 3D meshes. The plugin creates an Image-to-3D task, polls for
+  completion, downloads the resulting GLB file, and imports it into the UE Content Browser as a static
+  mesh asset. Options include PBR texture generation and topology remeshing. Requires a Meshy API key.
+</p>
+
+<!-- ═══════════════ 10. VIDEO GENERATION ═══════════════ -->
+<h2 class="section-title" id="s10">10. Video Generation</h2>
+
+<p>
+  The Video Generation tab provides image-to-video capabilities using a source frame (typically a
+  generated image from the Image tab). Three backends are supported.
+</p>
+
+<table>
+  <thead><tr><th>Backend</th><th>Key Features</th><th>Settings</th></tr></thead>
+  <tbody>
+    <tr><td>Kling Video</td><td>Kling v2/v2.5 models, std/pro quality tiers</td><td>Duration 1-10s, configurable FPS, motion prompt</td></tr>
+    <tr><td>Wan I2V</td><td>Wan 2.1/2.6 models, 480P-1080P resolutions</td><td>Duration, FPS, prompt, negative prompt</td></tr>
+    <tr><td>Veo3 (Google)</td><td>Google Veo 3.0/3.1, optional audio generation</td><td>Aspect ratio, person generation policy, duration</td></tr>
+  </tbody>
+</table>
+
+<!-- ═══════════════ 11. 3D PIPELINE ═══════════════ -->
+<h2 class="section-title" id="s11">11. 3D Model Pipeline</h2>
+
+<p>
+  UE Gen includes a complete pipeline from 2D generation to 3D asset import. The typical workflow is:
+  generate an image, send it to Meshy for Image-to-3D conversion, then import the resulting mesh
+  into UE as a static mesh asset.
+</p>
+
+<h3>Pipeline Steps</h3>
+<ul class="features">
+  <li><b>1. Generate</b> an image using any generation mode.</li>
+  <li><b>2. Convert to 3D</b> via Meshy API (automatic task creation, polling, and download).</li>
+  <li><b>3. Import</b> the GLB model into UE as a static mesh with optional collision, Nanite, and auto-placement.</li>
+</ul>
+<p>
+  The graph editor provides dedicated UE source nodes for each stage: UE Image Bridge for disk handoffs,
+  UE Save 3D Model for downloading generated meshes, UE 3D Asset Export for Content Browser import,
+  and UE Meshy Import for direct Meshy-to-level placement.
+</p>
+
+<!-- ═══════════════ 12. LoRA MANAGEMENT ═══════════════ -->
+<h2 class="section-title" id="s12">12. LoRA Management</h2>
+
+<p>
+  LoRA (Low-Rank Adaptation) models allow fine-tuned style control. The LoRA panel provides a dropdown
+  of available LoRA files (auto-discovered from ComfyUI), a weight slider (0.0 to 2.0, default 0.75),
+  and an Add button. Active LoRAs appear in a list with per-LoRA weight adjustment, enable/disable
+  toggles, and remove buttons.
+</p>
+<p>
+  When generating, each enabled LoRA is injected as a LoraLoader node in the ComfyUI workflow, chained
+  between the checkpoint loader and the sampling nodes. Multiple LoRAs can be stacked with independent weights.
+</p>
+
+<!-- ═══════════════ 13. SETTINGS REFERENCE ═══════════════ -->
+<h2 class="section-title" id="s13">13. Settings Reference</h2>
+
+<p>
+  All settings are accessible via <b>Project Settings &gt; Plugins &gt; UE Gen</b>. They are persisted
+  in the project's editor configuration files.
+</p>
+
+<h3>Connection Settings</h3>
+<table>
+  <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>ComfyUI URL</td><td>http://127.0.0.1:8188</td><td>ComfyUI server address</td></tr>
+    <tr><td>Timeout</td><td>120 seconds</td><td>HTTP request timeout (5-600s)</td></tr>
+    <tr><td>ComfyUI API Key</td><td>(empty)</td><td>For paid API nodes (Nano Banana 2, partner nodes). See <a href="#s2">API Keys</a> section for setup instructions.</td></tr>
+    <tr><td>Poll Interval</td><td>0.5 seconds</td><td>Status check frequency (0.25-5.0s)</td></tr>
+  </tbody>
+</table>
+
+<h3>Generation Parameters</h3>
+<table>
+  <thead><tr><th>Setting</th><th>Default</th><th>Range</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>Output Width</td><td>512</td><td>64-2048</td><td>Generation output width (pixels)</td></tr>
+    <tr><td>Output Height</td><td>512</td><td>64-2048</td><td>Generation output height (pixels)</td></tr>
+    <tr><td>Denoising Strength</td><td>0.55</td><td>0.0-1.0</td><td>img2img change amount</td></tr>
+    <tr><td>Steps</td><td>30</td><td>1-150</td><td>Sampling iterations</td></tr>
+    <tr><td>CFG Scale</td><td>7.0</td><td>1.0-30.0</td><td>Prompt guidance strength</td></tr>
+    <tr><td>Seed</td><td>0</td><td>int64</td><td>Random seed (0 = random)</td></tr>
+    <tr><td>Sampler</td><td>euler_ancestral</td><td>&mdash;</td><td>Sampling algorithm</td></tr>
+    <tr><td>Scheduler</td><td>normal</td><td>&mdash;</td><td>Noise schedule</td></tr>
+  </tbody>
+</table>
+
+<h3>Depth / ControlNet Settings</h3>
+<table>
+  <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>Enable Depth ControlNet</td><td>false</td><td>Use depth map as structural guide</td></tr>
+    <tr><td>ControlNet Model</td><td>control_v11f1p_sd15_depth.pth</td><td>Depth control model filename</td></tr>
+    <tr><td>ControlNet Strength</td><td>1.0</td><td>Influence strength (0.0-2.0)</td></tr>
+    <tr><td>Max Depth Distance</td><td>50,000 UU</td><td>Far boundary for depth normalization (100-500,000)</td></tr>
+  </tbody>
+</table>
+
+<h3>Hi-Res Fix Settings</h3>
+<table>
+  <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>Enable Hi-Res Fix</td><td>false</td><td>Two-pass upscale generation</td></tr>
+    <tr><td>Upscale Factor</td><td>1.5</td><td>Scaling factor for second pass (1.0-4.0)</td></tr>
+    <tr><td>Hi-Res Denoise</td><td>0.45</td><td>Denoising for upscale pass (0.0-1.0)</td></tr>
+    <tr><td>Hi-Res Steps</td><td>20</td><td>Steps in upscale pass (1-150)</td></tr>
+  </tbody>
+</table>
+
+<h3>Cost Estimation Settings</h3>
+<p>
+  When <b>Show Cost Estimates</b> is enabled, the status bar displays an estimated API cost each time you
+  click Generate or Animate. Local ComfyUI modes (img2img, Depth+Prompt, Prompt Only, Wan I2V) show
+  "Local (no API cost)". External API modes show a dollar estimate calculated from the pricing table below.
+  Since API pricing changes over time, all values are user-editable in Project Settings.
+</p>
+
+<table>
+  <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td>Show Cost Estimates</td><td>true</td><td>Enable/disable cost display in status bar</td></tr>
+    <tr><td>Gemini 1K Cost</td><td>$0.067</td><td>Per image at 1K resolution (Nano Banana 2)</td></tr>
+    <tr><td>Gemini 2K Cost</td><td>$0.101</td><td>Per image at 2K resolution</td></tr>
+    <tr><td>Gemini 4K Cost</td><td>$0.151</td><td>Per image at 4K resolution</td></tr>
+    <tr><td>Kling Image Cost</td><td>$0.04</td><td>Per image (multiplied by Image Count)</td></tr>
+    <tr><td>Kling Video Std</td><td>$0.168/sec</td><td>Per second, Standard quality</td></tr>
+    <tr><td>Kling Video Pro</td><td>$0.224/sec</td><td>Per second, Pro quality</td></tr>
+    <tr><td>Veo3 Cost</td><td>$0.40/sec</td><td>Per second of generated video</td></tr>
+    <tr><td>Meshy Credits</td><td>15</td><td>Credits per Image-to-3D task (with texture)</td></tr>
+    <tr><td>Tripo Credits</td><td>20</td><td>Credits per Tripo Image-to-3D task</td></tr>
+  </tbody>
+</table>
+
+<!-- ═══════════════ 14. ARCHITECTURE ═══════════════ -->
+<h2 class="section-title" id="s14">14. Architecture and Technical Reference</h2>
+
+<p>
+  This section covers the plugin's internal architecture for developers looking to extend or contribute to UE Gen.
+</p>
+
+<h3>Module Structure</h3>
+<p>
+  UE Gen is a single editor module that loads at PostEngineInit. It registers a nomad tab spawner via
+  FGlobalTabmanager and extends the toolbar/menus with a launch button. The plugin is approximately
+  23,900 lines of C++ across 14 header and 14 implementation files.
+</p>
+
+<h3>Key Classes</h3>
+<table>
+  <thead><tr><th>Class</th><th>File</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>FUE_GenModule</td><td>UE_Gen.h/.cpp</td><td>Plugin lifecycle, tab spawner, toolbar registration</td></tr>
+    <tr><td>SUE_GenPanel</td><td>SUE_GenPanel.h/.cpp</td><td>Main UI panel (SCompoundWidget)</td></tr>
+    <tr><td>SWorkflowGraphEditor</td><td>SWorkflowGraphEditor.h/.cpp</td><td>Interactive node graph editor</td></tr>
+    <tr><td>FViewportCapture</td><td>ViewportCapture.h/.cpp</td><td>Viewport RGB capture + camera metadata</td></tr>
+    <tr><td>FDepthPassRenderer</td><td>DepthPassRenderer.h/.cpp</td><td>Depth map extraction via SceneCaptureComponent2D</td></tr>
+    <tr><td>FGenAIHttpClient</td><td>GenAIHttpClient.h/.cpp</td><td>ComfyUI HTTP/WebSocket communication</td></tr>
+    <tr><td>FComfyNodeDatabase</td><td>ComfyNodeDatabase.h/.cpp</td><td>Singleton: node definition cache from /object_info</td></tr>
+    <tr><td>UGenAISettings</td><td>GenAISettings.h/.cpp</td><td>UDeveloperSettings: all configurable settings</td></tr>
+    <tr><td>FMeshyApiClient</td><td>MeshyApiClient.h/.cpp</td><td>Meshy Image-to-3D API client</td></tr>
+    <tr><td>FMeshPreviewRenderer</td><td>MeshPreviewRenderer.h/.cpp</td><td>Offscreen 3D mesh preview rendering</td></tr>
+  </tbody>
+</table>
+
+<h3>Data Flow</h3>
+<p>
+  The generation pipeline flows through these stages: the user interacts with SUE_GenPanel, which
+  coordinates between the graph editor (SWorkflowGraphEditor), capture subsystems (FViewportCapture,
+  FDepthPassRenderer), and the HTTP client (FGenAIHttpClient). The graph editor exports a
+  ComfyUI-compatible JSON workflow, the panel resolves UE source node markers by uploading captured
+  images, and the HTTP client submits the final workflow to the ComfyUI server.
+</p>
+
+<h3>GC Safety</h3>
+<p>
+  The plugin uses a PostGarbageCollect delegate pattern to refresh stale TObjectPtr handles in
+  heap-allocated FSlateBrush objects. Both SUE_GenPanel and SWorkflowGraphEditor register for
+  FCoreUObjectDelegates::GetPostGarbageCollect() and refresh all brush resource handles from their
+  raw texture pointers after each GC cycle. UI textures are rooted via AddToRoot() to prevent
+  premature collection.
+</p>
+
+<h3>Architectural Patterns</h3>
+<ul class="features">
+  <li><b>Singleton:</b> FComfyNodeDatabase and UGenAISettings provide global access.</li>
+  <li><b>Delegate/Event:</b> Async operations use multicast delegates (OnGenerationComplete, OnTaskProgress, etc.).</li>
+  <li><b>RAII/Unique Ownership:</b> TUniquePtr manages subsystem lifetimes (capture, HTTP, Meshy).</li>
+  <li><b>Weak References:</b> TWeakObjectPtr in FMeshPreviewRenderer prevents stale references during GC compaction.</li>
+</ul>
+
+<!-- ═══════════════ 15. SHORTCUTS & TIPS ═══════════════ -->
+<h2 class="section-title" id="s15">15. Keyboard Shortcuts and Tips</h2>
+
+<h3>Graph Editor Shortcuts</h3>
+<table>
+  <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+  <tbody>
+    <tr><td>Right-click (empty space)</td><td>Open Add Node menu</td></tr>
+    <tr><td>Right-click (on node)</td><td>Delete node option</td></tr>
+    <tr><td>Delete / Backspace</td><td>Delete selected nodes</td></tr>
+    <tr><td>Shift + Click</td><td>Multi-select nodes</td></tr>
+    <tr><td>Click-drag (empty space)</td><td>Box selection</td></tr>
+    <tr><td>Right-drag / Middle-drag</td><td>Pan canvas</td></tr>
+    <tr><td>Scroll wheel</td><td>Zoom in/out</td></tr>
+    <tr><td>Double-click wire</td><td>Insert reroute node</td></tr>
+  </tbody>
+</table>
+
+<h3>Tips</h3>
+<ul class="features">
+  <li><b>Capture once, generate many:</b> After clicking Capture Viewport, you can click Generate multiple times with different prompts or settings. The plugin reuses the existing capture data.</li>
+  <li><b>Import ComfyUI workflows:</b> Export a workflow from ComfyUI's web UI using "Save (API Format)", then use the Load button in UE Gen's graph editor to import it. Nodes are auto-laid out.</li>
+  <li><b>Use the Reference Adherence slider</b> instead of manually adjusting CFG, steps, and denoise. It controls all three simultaneously for a balanced result.</li>
+  <li><b>Camera data injection</b> is tagged to prevent duplicates. You can safely click Generate multiple times without the camera description accumulating in your prompt.</li>
+  <li><b>Gallery selection:</b> The currently selected result is shown at full brightness. Click any dimmed thumbnail to switch to it. The selected image also becomes the source frame for the Video Generation tab.</li>
+</ul>
+
+<!-- ═══════════════ FOOTER ═══════════════ -->
+<div class="footer">
+  &copy; 2026 Creative Story Lab Inc &nbsp;|&nbsp; C. Michael Neely &nbsp;|&nbsp; Confidential &nbsp;|&nbsp; UE Gen Plugin v1.0.0 Beta
+</div>
+
+</body>
+</html>
