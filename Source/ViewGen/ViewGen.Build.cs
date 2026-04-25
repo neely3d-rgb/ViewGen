@@ -45,6 +45,7 @@ public class ViewGen : ModuleRules
 			"JsonUtilities",
 			"ImageWrapper",
 			"DesktopPlatform",
+			"ApplicationCore",
 			"PropertyEditor",
 			"EditorWidgets",
 			"DeveloperSettings",

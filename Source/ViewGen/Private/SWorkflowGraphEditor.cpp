@@ -18,6 +18,7 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/GarbageCollection.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Fonts/FontMeasure.h"
 #include "Misc/DefaultValueHelper.h"
@@ -4444,34 +4445,82 @@ static TSharedPtr<FJsonObject> ConvertWebUIToAPIFormat(TSharedPtr<FJsonObject> R
 			}
 		}
 
-		// Widget values: map them to input names using the node definition
+		// Widget values: map them to input names using the node definition.
+		// ComfyUI's widgets_values array may contain frontend-only values
+		// (e.g. "control_after_generate" after seed inputs) that don't exist
+		// in the node definition from /object_info. We walk both arrays with
+		// separate indices — advancing the widget value index for each match
+		// and also for values that look like known frontend-only controls.
 		if (WidgetVals && WidgetVals->Num() > 0)
 		{
 			const FComfyNodeDatabase& DB = FComfyNodeDatabase::Get();
 			const FComfyNodeDef* Def = DB.FindNode(ClassType);
 			if (Def)
 			{
-				// Collect widget (non-link) input names in definition order
-				TArray<FString> WidgetInputNames;
+				// Collect widget (non-link) input definitions in order
+				TArray<const FComfyInputDef*> WidgetDefs;
 				for (const FComfyInputDef& InputDef : Def->Inputs)
 				{
 					if (!InputDef.IsLinkType())
 					{
-						WidgetInputNames.Add(InputDef.Name);
+						WidgetDefs.Add(&InputDef);
 					}
 				}
 
-				// Map positional widget values to named inputs
-				for (int32 i = 0; i < WidgetVals->Num() && i < WidgetInputNames.Num(); i++)
+				// Known frontend-only widget values that ComfyUI inserts
+				// but don't appear in /object_info
+				static const TSet<FString> FrontendOnlyValues = {
+					TEXT("fixed"), TEXT("increment"), TEXT("decrement"),
+					TEXT("randomize"), TEXT("random")
+				};
+
+				// Walk widgets_values, consuming def entries as we match
+				int32 DefIdx = 0;
+				for (int32 ValIdx = 0; ValIdx < WidgetVals->Num() && DefIdx < WidgetDefs.Num(); ValIdx++)
 				{
-					TSharedPtr<FJsonValue> Val = (*WidgetVals)[i];
+					TSharedPtr<FJsonValue> Val = (*WidgetVals)[ValIdx];
 					if (Val->IsNull()) continue;
 
-					// Don't overwrite link-type inputs
-					if (InputsObj->HasField(WidgetInputNames[i])) continue;
+					const FComfyInputDef* CurDef = WidgetDefs[DefIdx];
 
-					// Preserve the original JSON value type
-					InputsObj->SetField(WidgetInputNames[i], Val);
+					// Check if this value is a frontend-only control
+					// (typically follows a seed/noise_seed INT input)
+					FString StrVal;
+					if (Val->TryGetString(StrVal) && FrontendOnlyValues.Contains(StrVal.ToLower()))
+					{
+						// This is a control_after_generate or similar — skip it,
+						// don't advance the def index
+						continue;
+					}
+
+					// Type validation: check if the value is compatible with the expected input type
+					bool bTypeMatch = true;
+					double NumVal;
+					if (CurDef->Type == TEXT("INT") || CurDef->Type == TEXT("FLOAT"))
+					{
+						// Should be a number
+						if (!Val->TryGetNumber(NumVal))
+						{
+							// Value is a string but we expect a number — likely a frontend widget, skip
+							if (Val->TryGetString(StrVal))
+							{
+								bTypeMatch = false;
+							}
+						}
+					}
+
+					if (!bTypeMatch)
+					{
+						// Value doesn't match expected type — skip this value (frontend-only)
+						continue;
+					}
+
+					// Don't overwrite link-type inputs already set
+					if (!InputsObj->HasField(CurDef->Name))
+					{
+						InputsObj->SetField(CurDef->Name, Val);
+					}
+					DefIdx++;
 				}
 			}
 		}
@@ -5469,7 +5518,12 @@ void SWorkflowGraphEditor::CopySelectedNodes()
 
 void SWorkflowGraphEditor::PasteNodes()
 {
-	if (!Clipboard.IsValid() || Clipboard->Nodes.Num() == 0) return;
+	// If internal clipboard is empty, try the system clipboard for ComfyUI node data
+	if (!Clipboard.IsValid() || Clipboard->Nodes.Num() == 0)
+	{
+		PasteFromSystemClipboard();
+		return;
+	}
 
 	PushUndoSnapshot();
 	const FVector2D PasteOffset(60.0f, 60.0f);
@@ -5525,6 +5579,263 @@ void SWorkflowGraphEditor::PasteNodes()
 	SelectedNodeIds = MoveTemp(NewSelectedIds);
 	NotifySelectionChanged();
 	NotifyGraphChanged();
+}
+
+void SWorkflowGraphEditor::PasteFromSystemClipboard()
+{
+	// Read the system clipboard
+	FString ClipboardText;
+	FPlatformApplicationMisc::ClipboardPaste(ClipboardText);
+
+	if (ClipboardText.IsEmpty()) return;
+
+	// Try to parse as JSON
+	TSharedPtr<FJsonObject> JsonRoot;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ClipboardText);
+	if (!FJsonSerializer::Deserialize(Reader, JsonRoot) || !JsonRoot.IsValid())
+	{
+		return; // Not valid JSON — ignore
+	}
+
+	// Detect format: ComfyUI Web UI clipboard has "nodes" array and optionally "links" array
+	// ComfyUI API format has string keys with "class_type" objects
+	const TArray<TSharedPtr<FJsonValue>>* NodesArray;
+	bool bIsWebUI = JsonRoot->TryGetArrayField(TEXT("nodes"), NodesArray);
+
+	// Also check for API format: any top-level key with a "class_type" child
+	bool bIsAPI = false;
+	if (!bIsWebUI)
+	{
+		for (const auto& Pair : JsonRoot->Values)
+		{
+			const TSharedPtr<FJsonObject>* NodeObj;
+			if (Pair.Value->TryGetObject(NodeObj))
+			{
+				FString ClassType;
+				if ((*NodeObj)->TryGetStringField(TEXT("class_type"), ClassType))
+				{
+					bIsAPI = true;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!bIsWebUI && !bIsAPI) return; // Not ComfyUI data
+
+	PushUndoSnapshot();
+
+	const FComfyNodeDatabase& DB = FComfyNodeDatabase::Get();
+
+	// Convert Web UI format to API format if needed
+	TMap<FString, FVector2D> WebUIPositions;
+	TSharedPtr<FJsonObject> APIWorkflow;
+	if (bIsWebUI)
+	{
+		APIWorkflow = ConvertWebUIToAPIFormat(JsonRoot, WebUIPositions);
+		if (!APIWorkflow.IsValid() || APIWorkflow->Values.Num() == 0) return;
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Pasting %d nodes from ComfyUI Web UI clipboard"), APIWorkflow->Values.Num());
+	}
+	else
+	{
+		APIWorkflow = JsonRoot;
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Pasting %d nodes from ComfyUI API clipboard"), APIWorkflow->Values.Num());
+	}
+
+	// Calculate the center of the current view for paste positioning
+	FVector2D ViewCenter = -ViewOffset / ZoomLevel;
+
+	// Create nodes from the API-format workflow (append to existing graph, don't clear)
+	TMap<FString, FString> IdRemap; // Old ID -> New ID
+	TSet<FString> NewSelectedIds;
+
+	for (const auto& Pair : APIWorkflow->Values)
+	{
+		const FString& OldNodeId = Pair.Key;
+		const TSharedPtr<FJsonObject>* NodeObjPtr;
+		if (!Pair.Value->TryGetObject(NodeObjPtr)) continue;
+
+		FString ClassType;
+		if (!(*NodeObjPtr)->TryGetStringField(TEXT("class_type"), ClassType) || ClassType.IsEmpty())
+		{
+			continue;
+		}
+
+		FString NewId = FString::FromInt(NextAutoNodeId++);
+		IdRemap.Add(OldNodeId, NewId);
+
+		FString Title = ClassType;
+		const TSharedPtr<FJsonObject>* MetaObj;
+		if ((*NodeObjPtr)->TryGetObjectField(TEXT("_meta"), MetaObj))
+		{
+			FString MetaTitle;
+			if ((*MetaObj)->TryGetStringField(TEXT("title"), MetaTitle) && !MetaTitle.IsEmpty())
+			{
+				Title = MetaTitle;
+			}
+		}
+
+		// Determine position
+		FVector2D NodePos = ViewCenter;
+		FVector2D* WebPos = WebUIPositions.Find(OldNodeId);
+		if (WebPos)
+		{
+			NodePos = *WebPos;
+		}
+
+		const FComfyNodeDef* Def = DB.FindNode(ClassType);
+		FGraphNode Node;
+
+		if (Def)
+		{
+			Node = CreateNodeFromDef(*Def, NewId, NodePos);
+			Node.Title = Title;
+		}
+		else
+		{
+			// Unknown node
+			Node.Id = NewId;
+			Node.ClassType = ClassType;
+			Node.Title = Title;
+			Node.Position = NodePos;
+			Node.HeaderColor = GetNodeColor(ClassType);
+			Node.Size = FVector2D(GraphConstants::NodeMinWidth, GraphConstants::NodeHeaderHeight + 40.0f);
+
+			// Create pins from API inputs/outputs
+			const TSharedPtr<FJsonObject>* InputsObj;
+			if ((*NodeObjPtr)->TryGetObjectField(TEXT("inputs"), InputsObj))
+			{
+				for (const auto& InputPair : (*InputsObj)->Values)
+				{
+					const TArray<TSharedPtr<FJsonValue>>* ArrayVal;
+					if (InputPair.Value->TryGetArray(ArrayVal))
+					{
+						FGraphPin Pin;
+						Pin.Name = InputPair.Key;
+						Pin.Type = TEXT("*");
+						Pin.bIsInput = true;
+						Pin.OwnerNodeId = NewId;
+						Node.InputPins.Add(Pin);
+					}
+				}
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* OutputDefs;
+			if ((*NodeObjPtr)->TryGetArrayField(TEXT("_outputs"), OutputDefs))
+			{
+				for (const auto& OutVal : *OutputDefs)
+				{
+					const TSharedPtr<FJsonObject>* OutObjPtr;
+					if (!OutVal->TryGetObject(OutObjPtr)) continue;
+					FGraphPin Pin;
+					Pin.Name = (*OutObjPtr)->GetStringField(TEXT("name"));
+					Pin.Type = (*OutObjPtr)->GetStringField(TEXT("type"));
+					Pin.bIsInput = false;
+					Pin.OwnerNodeId = NewId;
+					Node.OutputPins.Add(Pin);
+				}
+			}
+		}
+
+		// Apply widget values from inputs
+		const TSharedPtr<FJsonObject>* InputsObj;
+		if ((*NodeObjPtr)->TryGetObjectField(TEXT("inputs"), InputsObj))
+		{
+			for (const auto& InputPair : (*InputsObj)->Values)
+			{
+				const TArray<TSharedPtr<FJsonValue>>* ArrayVal;
+				if (InputPair.Value->TryGetArray(ArrayVal)) continue; // Skip links
+
+				FString StrVal;
+				double NumVal;
+				bool BoolVal;
+				FString ParsedVal;
+
+				if (InputPair.Value->TryGetString(StrVal))
+					ParsedVal = StrVal;
+				else if (InputPair.Value->TryGetNumber(NumVal))
+					ParsedVal = FString::SanitizeFloat(NumVal);
+				else if (InputPair.Value->TryGetBool(BoolVal))
+					ParsedVal = BoolVal ? TEXT("true") : TEXT("false");
+				else
+					continue;
+
+				if (Node.WidgetValues.Contains(InputPair.Key))
+					Node.WidgetValues[InputPair.Key] = ParsedVal;
+				else
+				{
+					Node.WidgetValues.Add(InputPair.Key, ParsedVal);
+					if (!Node.WidgetOrder.Contains(InputPair.Key))
+						Node.WidgetOrder.Add(InputPair.Key);
+				}
+			}
+		}
+
+		int32 IdNum;
+		if (FDefaultValueHelper::ParseInt(NewId, IdNum))
+		{
+			NextAutoNodeId = FMath::Max(NextAutoNodeId, IdNum + 1);
+		}
+
+		ComputeNodeSize(Node);
+		int32 Idx = Nodes.Add(MoveTemp(Node));
+		NodeIndexMap.Add(NewId, Idx);
+		NewSelectedIds.Add(NewId);
+	}
+
+	// Create connections with remapped IDs
+	for (const auto& Pair : APIWorkflow->Values)
+	{
+		const FString& OldNodeId = Pair.Key;
+		const TSharedPtr<FJsonObject>* NodeObjPtr;
+		if (!Pair.Value->TryGetObject(NodeObjPtr)) continue;
+
+		const TSharedPtr<FJsonObject>* InputsObj;
+		if (!(*NodeObjPtr)->TryGetObjectField(TEXT("inputs"), InputsObj)) continue;
+
+		const FString* NewTargetId = IdRemap.Find(OldNodeId);
+		if (!NewTargetId) continue;
+
+		for (const auto& InputPair : (*InputsObj)->Values)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* LinkArray;
+			if (!InputPair.Value->TryGetArray(LinkArray) || LinkArray->Num() < 2) continue;
+
+			FString OldSourceId;
+			(*LinkArray)[0]->TryGetString(OldSourceId);
+			int32 SourceOutputIndex = static_cast<int32>((*LinkArray)[1]->AsNumber());
+
+			const FString* NewSourceId = IdRemap.Find(OldSourceId);
+			if (!NewSourceId) continue; // Source not in pasted set — skip
+
+			FGraphConnection Conn;
+			Conn.SourceNodeId = *NewSourceId;
+			Conn.SourceOutputIndex = SourceOutputIndex;
+			Conn.TargetNodeId = *NewTargetId;
+			Conn.TargetInputName = InputPair.Key;
+			Connections.Add(Conn);
+		}
+	}
+
+	// If no Web UI positions, auto-layout just the pasted nodes around the view center
+	if (WebUIPositions.Num() == 0 && NewSelectedIds.Num() > 0)
+	{
+		float YOffset = 0.0f;
+		for (const FString& NodeId : NewSelectedIds)
+		{
+			const int32* IdxPtr = NodeIndexMap.Find(NodeId);
+			if (!IdxPtr) continue;
+			Nodes[*IdxPtr].Position = ViewCenter + FVector2D(0.0f, YOffset);
+			YOffset += Nodes[*IdxPtr].Size.Y + 20.0f;
+		}
+	}
+
+	// Select the pasted nodes
+	SelectedNodeIds = MoveTemp(NewSelectedIds);
+	NotifySelectionChanged();
+	NotifyGraphChanged();
+
+	UE_LOG(LogTemp, Log, TEXT("ViewGen: Pasted %d nodes from system clipboard"), IdRemap.Num());
 }
 
 void SWorkflowGraphEditor::CutSelectedNodes()

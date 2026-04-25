@@ -7117,38 +7117,81 @@ FReply SViewGenPanel::OnLoadGraphClicked()
 
 	if (bOpened && OutFiles.Num() > 0)
 	{
-		if (GraphEditor->LoadGraphFromFile(OutFiles[0]))
+		FString FileContent;
+		if (!FFileHelper::LoadFileToString(FileContent, *OutFiles[0]))
 		{
-			RefreshLoadImageThumbnails();
-			AutoSaveGraph(); // Persist as last-edited graph
-			FString Filename = FPaths::GetCleanFilename(OutFiles[0]);
-			UpdateStatusText(FString::Printf(TEXT("Graph loaded: %s"), *Filename));
+			UpdateStatusText(TEXT("Failed to read file"));
 		}
 		else
 		{
-			// Editor format failed — try importing as a raw ComfyUI API workflow.
-			// ComfyUI exports workflows as {"node_id": {"class_type": ..., "inputs": ...}, ...}
-			FString FileContent;
-			if (FFileHelper::LoadFileToString(FileContent, *OutFiles[0]))
+			TSharedPtr<FJsonObject> JsonRoot;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FileContent);
+			if (!FJsonSerializer::Deserialize(Reader, JsonRoot) || !JsonRoot.IsValid())
 			{
-				TSharedPtr<FJsonObject> WorkflowJson;
-				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FileContent);
-				if (FJsonSerializer::Deserialize(Reader, WorkflowJson) && WorkflowJson.IsValid())
-				{
-					GraphEditor->ImportWorkflowJSON(WorkflowJson);
-					RefreshLoadImageThumbnails();
-					AutoSaveGraph();
-					FString Filename = FPaths::GetCleanFilename(OutFiles[0]);
-					UpdateStatusText(FString::Printf(TEXT("Imported ComfyUI workflow: %s"), *Filename));
-				}
-				else
-				{
-					UpdateStatusText(TEXT("Failed to load — file is not valid JSON"));
-				}
+				UpdateStatusText(TEXT("Failed to load — file is not valid JSON"));
 			}
 			else
 			{
-				UpdateStatusText(TEXT("Failed to read file"));
+				FString Filename = FPaths::GetCleanFilename(OutFiles[0]);
+
+				// Detect format: ComfyUI Web UI export has "nodes" array with objects containing "type"
+				// ComfyUI API format has top-level keys with "class_type" objects
+				// ViewGen native format has "version" number and "nodes" array with "class_type" objects
+				const TArray<TSharedPtr<FJsonValue>>* NodesArray;
+				bool bIsComfyWebUI = false;
+				bool bIsComfyAPI = false;
+
+				if (JsonRoot->TryGetArrayField(TEXT("nodes"), NodesArray) && NodesArray->Num() > 0)
+				{
+					// Check if the first node has "type" (Web UI) vs "class_type" (ViewGen native)
+					const TSharedPtr<FJsonObject>* FirstNode;
+					if ((*NodesArray)[0]->TryGetObject(FirstNode))
+					{
+						FString TypeField;
+						if ((*FirstNode)->TryGetStringField(TEXT("type"), TypeField) &&
+							!(*FirstNode)->HasField(TEXT("class_type")))
+						{
+							bIsComfyWebUI = true;
+						}
+					}
+				}
+
+				if (!bIsComfyWebUI)
+				{
+					// Check for API format: any top-level key with a "class_type" child
+					for (const auto& Pair : JsonRoot->Values)
+					{
+						const TSharedPtr<FJsonObject>* NodeObj;
+						if (Pair.Value->TryGetObject(NodeObj))
+						{
+							if ((*NodeObj)->HasField(TEXT("class_type")))
+							{
+								bIsComfyAPI = true;
+								break;
+							}
+						}
+					}
+				}
+
+				if (bIsComfyWebUI || bIsComfyAPI)
+				{
+					// ComfyUI format (Web UI or API) — use ImportWorkflowJSON which handles both
+					GraphEditor->ImportWorkflowJSON(JsonRoot);
+					RefreshLoadImageThumbnails();
+					AutoSaveGraph();
+					UpdateStatusText(FString::Printf(TEXT("Imported ComfyUI workflow: %s"), *Filename));
+				}
+				else if (GraphEditor->LoadGraphFromFile(OutFiles[0]))
+				{
+					// ViewGen native graph format
+					RefreshLoadImageThumbnails();
+					AutoSaveGraph();
+					UpdateStatusText(FString::Printf(TEXT("Graph loaded: %s"), *Filename));
+				}
+				else
+				{
+					UpdateStatusText(TEXT("Failed to load — unrecognized file format"));
+				}
 			}
 		}
 	}

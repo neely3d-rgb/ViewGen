@@ -388,6 +388,8 @@ public:
 	void PasteNodes();
 	/** Cut selected nodes (copy + delete). */
 	void CutSelectedNodes();
+	/** Paste ComfyUI nodes from the system clipboard (Web UI or API format). */
+	void PasteFromSystemClipboard();
 private:
 	// ---- Clipboard ----
 	/** Serialized clipboard data: nodes + connections for the copied selection. */
