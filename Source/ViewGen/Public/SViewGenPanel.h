@@ -355,6 +355,9 @@ private:
 	/** Submit the graph editor's workflow directly to ComfyUI */
 	FReply OnGenerateFromGraphClicked();
 
+	/** Run the graph up to a specific node (partial execution from play button) */
+	void OnRunToNodeRequested(const FString& TargetNodeId);
+
 	/** Replace UE image marker filenames in the workflow with real uploaded filenames */
 	void ResolveUEImageMarker(TSharedPtr<FJsonObject> Workflow, const FString& Marker, const FString& ServerFilename);
 

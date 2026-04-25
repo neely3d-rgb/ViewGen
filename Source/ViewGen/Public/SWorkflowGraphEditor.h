@@ -146,6 +146,19 @@ struct FGraphNode
 	/** Whether this node is currently executing in ComfyUI */
 	bool bIsExecuting = false;
 
+	/** Whether this node can be "run to" (output/terminal node like SaveImage, PreviewImage) */
+	bool IsRunnable() const
+	{
+		if (NodeDef && NodeDef->bIsOutputNode) return true;
+		// Also treat common output nodes as runnable even without a def
+		static const TSet<FString> RunnableTypes = {
+			TEXT("SaveImage"), TEXT("PreviewImage"), TEXT("SaveAnimatedWEBP"),
+			TEXT("SaveAnimatedPNG"), TEXT("SaveWEBM"), TEXT("SaveImageWebsocket"),
+			TEXT("VHS_VideoCombine")
+		};
+		return RunnableTypes.Contains(ClassType);
+	}
+
 	/** Whether this is a reroute/redirect node (visual-only passthrough) */
 	bool IsReroute() const { return ClassType == RerouteClassType; }
 
@@ -186,11 +199,15 @@ struct FGraphNode
 class SWorkflowGraphEditor : public SCompoundWidget
 {
 public:
+	DECLARE_DELEGATE_OneParam(FOnRunToNode, const FString& /* NodeId */);
+
 	SLATE_BEGIN_ARGS(SWorkflowGraphEditor) {}
 		/** Called whenever the graph changes (node added/removed, connection changed, value edited) */
 		SLATE_EVENT(FSimpleDelegate, OnGraphChanged)
 		/** Called whenever the node selection changes (for external details panel) */
 		SLATE_EVENT(FSimpleDelegate, OnSelectionChanged)
+		/** Called when the user clicks the "Run" button on a node — passes the target node ID */
+		SLATE_EVENT(FOnRunToNode, OnRunToNode)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -251,6 +268,15 @@ public:
 
 	/** Check if the graph contains a UE Sequence node */
 	bool HasSequenceNode() const;
+
+	/** Export a partial workflow containing only the upstream dependencies of the target node.
+	 *  Returns a ComfyUI API-format JSON ready for /prompt submission. */
+	TSharedPtr<FJsonObject> ExportPartialWorkflow(const FString& TargetNodeId,
+		bool* OutNeedsViewport = nullptr, bool* OutNeedsDepth = nullptr,
+		FString* OutCameraDescription = nullptr, bool* OutNeedsSegmentation = nullptr) const;
+
+	/** Collect all upstream node IDs required by the given target node (recursive) */
+	TSet<FString> CollectUpstreamNodes(const FString& TargetNodeId) const;
 
 	/** Export the graph as multiple staged workflows (one per Sequence step).
 	 *  Each step's workflow contains only the nodes downstream of that step's output pin.
@@ -436,6 +462,11 @@ private:
 	// Connection hover highlight (-1 = none)
 	mutable int32 HoveredConnectionIndex = -1;
 
+	/** Node ID whose play button is currently hovered */
+	FString HoveredPlayButtonNodeId;
+	/** Node ID whose play button is currently pressed (mouse down) */
+	FString PressedPlayButtonNodeId;
+
 	// Mesh preview interaction state
 	FString MeshPreviewInteractNodeId;   // Node whose preview is being orbited/zoomed/panned
 	FVector2D MeshPreviewLastMousePos;    // Last mouse position during preview interaction
@@ -452,6 +483,7 @@ private:
 	// Callbacks
 	FSimpleDelegate OnGraphChanged;
 	FSimpleDelegate OnSelectionChanged;
+	FOnRunToNode OnRunToNode;
 
 	// ---- GC Safety ----
 

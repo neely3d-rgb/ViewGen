@@ -124,6 +124,7 @@ void SWorkflowGraphEditor::Construct(const FArguments& InArgs)
 {
 	OnGraphChanged = InArgs._OnGraphChanged;
 	OnSelectionChanged = InArgs._OnSelectionChanged;
+	OnRunToNode = InArgs._OnRunToNode;
 
 	// Register PostGC callback to refresh stale TObjectPtr handles in FSlateBrush objects.
 	// GC compaction can run mid-frame (e.g. during SavePackage) between Slate Tick and Paint,
@@ -1611,11 +1612,12 @@ void SWorkflowGraphEditor::DrawNode(const FGraphNode& Node, const FGeometry& Geo
 		Node.HeaderColor
 	);
 
-	// Title text
+	// Title text — leave room for play button on runnable nodes
+	const float PlayBtnSize = Node.IsRunnable() ? (HeaderH * 0.7f) : 0.0f;
 	const FSlateFontInfo TitleFont = FCoreStyle::GetDefaultFontStyle("Bold", static_cast<int32>(FMath::Max(7.0f, 10.0f * ZoomLevel)));
 	FSlateDrawElement::MakeText(
 		OutDrawElements, LayerId + 2,
-		Geom.ToPaintGeometry(FVector2D(Size.X - 12.0f, HeaderH), FSlateLayoutTransform(Pos + FVector2D(6.0f, 3.0f * ZoomLevel))),
+		Geom.ToPaintGeometry(FVector2D(Size.X - 12.0f - PlayBtnSize, HeaderH), FSlateLayoutTransform(Pos + FVector2D(6.0f, 3.0f * ZoomLevel))),
 		Node.Title,
 		TitleFont,
 		ESlateDrawEffect::None,
@@ -1649,6 +1651,85 @@ void SWorkflowGraphEditor::DrawNode(const FGraphNode& Node, const FGeometry& Geo
 				SubtitleColor
 			);
 		}
+	}
+
+	// Play button on runnable nodes (right side of header)
+	if (Node.IsRunnable() && ZoomLevel > 0.3f)
+	{
+		const float BtnSize = HeaderH * 0.6f;
+		const float BtnX = Pos.X + Size.X - BtnSize - 4.0f * ZoomLevel;
+		const float BtnY = Pos.Y + (HeaderH - BtnSize) * 0.5f;
+
+		// Determine button state
+		bool bHovered = (HoveredPlayButtonNodeId == Node.Id);
+		bool bPressed = (PressedPlayButtonNodeId == Node.Id);
+
+		// Button background — changes with state
+		FLinearColor BgColor;
+		if (bPressed)
+			BgColor = FLinearColor(0.1f, 0.4f, 0.1f, 0.7f);   // Dark green pressed
+		else if (bHovered)
+			BgColor = FLinearColor(0.15f, 0.15f, 0.18f, 0.8f); // Lighter on hover
+		else
+			BgColor = FLinearColor(0.0f, 0.0f, 0.0f, 0.3f);    // Subtle default
+
+		FSlateDrawElement::MakeBox(
+			OutDrawElements, LayerId + 2,
+			Geom.ToPaintGeometry(FVector2D(BtnSize, BtnSize), FSlateLayoutTransform(FVector2D(BtnX, BtnY))),
+			WhiteBox, ESlateDrawEffect::None,
+			BgColor
+		);
+
+		// Hover border
+		if (bHovered || bPressed)
+		{
+			FLinearColor BorderCol = bPressed
+				? FLinearColor(0.2f, 0.9f, 0.2f, 0.9f)
+				: FLinearColor(0.3f, 0.8f, 0.3f, 0.6f);
+			float Bw = 1.0f;
+			// Top
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3,
+				Geom.ToPaintGeometry(FVector2D(BtnSize, Bw), FSlateLayoutTransform(FVector2D(BtnX, BtnY))),
+				WhiteBox, ESlateDrawEffect::None, BorderCol);
+			// Bottom
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3,
+				Geom.ToPaintGeometry(FVector2D(BtnSize, Bw), FSlateLayoutTransform(FVector2D(BtnX, BtnY + BtnSize - Bw))),
+				WhiteBox, ESlateDrawEffect::None, BorderCol);
+			// Left
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3,
+				Geom.ToPaintGeometry(FVector2D(Bw, BtnSize), FSlateLayoutTransform(FVector2D(BtnX, BtnY))),
+				WhiteBox, ESlateDrawEffect::None, BorderCol);
+			// Right
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3,
+				Geom.ToPaintGeometry(FVector2D(Bw, BtnSize), FSlateLayoutTransform(FVector2D(BtnX + BtnSize - Bw, BtnY))),
+				WhiteBox, ESlateDrawEffect::None, BorderCol);
+		}
+
+		// Play triangle — brighter on hover/press
+		FLinearColor PlayColor;
+		if (bPressed)
+			PlayColor = FLinearColor(0.4f, 1.0f, 0.4f, 1.0f);  // Bright green
+		else if (bHovered)
+			PlayColor = FLinearColor(0.3f, 0.9f, 0.3f, 1.0f);  // Bright on hover
+		else
+			PlayColor = FLinearColor(0.2f, 0.7f, 0.2f, 0.8f);  // Muted default
+
+		TArray<FVector2D> TriVerts;
+		TriVerts.Add(FVector2D(BtnX + BtnSize * 0.25f, BtnY + BtnSize * 0.15f));
+		TriVerts.Add(FVector2D(BtnX + BtnSize * 0.25f, BtnY + BtnSize * 0.85f));
+		TriVerts.Add(FVector2D(BtnX + BtnSize * 0.8f, BtnY + BtnSize * 0.5f));
+		// Close the triangle
+		TriVerts.Add(FVector2D(BtnX + BtnSize * 0.25f, BtnY + BtnSize * 0.15f));
+
+		FSlateDrawElement::MakeLines(
+			OutDrawElements, LayerId + 4,
+			Geom.ToPaintGeometry(),
+			TriVerts,
+			ESlateDrawEffect::None,
+			PlayColor,
+			true, // bAntialias
+			FMath::Max(1.5f, 2.0f * ZoomLevel)
+		);
 	}
 
 	float YOffset = HeaderH + PadY;
@@ -1968,6 +2049,25 @@ FReply SWorkflowGraphEditor::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 			{
 				FGraphNode& HitNode = Nodes[*IdxPtr];
 
+				// Check if clicking the play button on a runnable node
+				if (HitNode.IsRunnable() && ZoomLevel > 0.3f)
+				{
+					FVector2D NodeScreenPos = GraphToLocal(HitNode.Position);
+					float PlayHeaderH = GraphConstants::NodeHeaderHeight * ZoomLevel;
+					float BtnSize = PlayHeaderH * 0.6f;
+					float BtnX = NodeScreenPos.X + HitNode.Size.X * ZoomLevel - BtnSize - 4.0f * ZoomLevel;
+					float BtnY = NodeScreenPos.Y + (PlayHeaderH - BtnSize) * 0.5f;
+
+					if (LocalPos.X >= BtnX && LocalPos.X <= BtnX + BtnSize &&
+						LocalPos.Y >= BtnY && LocalPos.Y <= BtnY + BtnSize)
+					{
+						// Play button pressed — track pressed state, fire on release
+						PressedPlayButtonNodeId = HitNode.Id;
+						OnRunToNode.ExecuteIfBound(HitNode.Id);
+						return FReply::Handled();
+					}
+				}
+
 				// Check if clicking on the mesh preview area — start orbit
 				if (HitNode.MeshPreview.IsValid() && HitNode.MeshPreview->HasPreview())
 				{
@@ -2085,6 +2185,9 @@ FReply SWorkflowGraphEditor::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 FReply SWorkflowGraphEditor::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	FVector2D LocalPos = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+
+	// Clear play button pressed state
+	PressedPlayButtonNodeId.Empty();
 
 	// End mesh preview interaction
 	if (bMeshPreviewOrbiting || bMeshPreviewPanning)
@@ -2309,6 +2412,28 @@ FReply SWorkflowGraphEditor::OnMouseMove(const FGeometry& MyGeometry, const FPoi
 		{
 			HoveredConnectionIndex = NewHovered;
 		}
+
+		// Update play button hover state
+		FString NewHoveredPlayBtn;
+		for (const FGraphNode& Node : Nodes)
+		{
+			if (!Node.IsRunnable() || ZoomLevel <= 0.3f) continue;
+
+			FVector2D NodeScreenPos = GraphToLocal(Node.Position);
+			float PlayHeaderH = GraphConstants::NodeHeaderHeight * ZoomLevel;
+			float BtnSize = PlayHeaderH * 0.6f;
+			float BtnX = NodeScreenPos.X + Node.Size.X * ZoomLevel - BtnSize - 4.0f * ZoomLevel;
+			float BtnY = NodeScreenPos.Y + (PlayHeaderH - BtnSize) * 0.5f;
+
+			if (LocalPos.X >= BtnX && LocalPos.X <= BtnX + BtnSize &&
+				LocalPos.Y >= BtnY && LocalPos.Y <= BtnY + BtnSize)
+			{
+				NewHoveredPlayBtn = Node.Id;
+				break;
+			}
+		}
+		HoveredPlayButtonNodeId = NewHoveredPlayBtn;
+
 		break;
 	}
 	}
@@ -5853,6 +5978,145 @@ void SWorkflowGraphEditor::CutSelectedNodes()
 		RemoveNode(NodeId);
 	}
 	bIsRestoringSnapshot = false;
+}
+
+// ============================================================================
+// Partial Execution — Run To Node
+// ============================================================================
+
+TSet<FString> SWorkflowGraphEditor::CollectUpstreamNodes(const FString& TargetNodeId) const
+{
+	TSet<FString> Result;
+	TArray<FString> Queue;
+	Queue.Add(TargetNodeId);
+
+	while (Queue.Num() > 0)
+	{
+		FString Current = Queue.Pop();
+		if (Result.Contains(Current)) continue;
+		Result.Add(Current);
+
+		// Find all connections where this node is the target
+		for (const FGraphConnection& Conn : Connections)
+		{
+			if (Conn.TargetNodeId == Current)
+			{
+				if (!Result.Contains(Conn.SourceNodeId))
+				{
+					Queue.Add(Conn.SourceNodeId);
+				}
+			}
+		}
+	}
+
+	return Result;
+}
+
+TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportPartialWorkflow(const FString& TargetNodeId,
+	bool* OutNeedsViewport, bool* OutNeedsDepth,
+	FString* OutCameraDescription, bool* OutNeedsSegmentation) const
+{
+	// Collect the subgraph
+	TSet<FString> RequiredNodes = CollectUpstreamNodes(TargetNodeId);
+
+	if (RequiredNodes.Num() == 0) return nullptr;
+
+	UE_LOG(LogTemp, Log, TEXT("ViewGen: Partial execution — %d nodes upstream of '%s'"),
+		RequiredNodes.Num(), *TargetNodeId);
+
+	// Initialize output flags
+	if (OutNeedsViewport) *OutNeedsViewport = false;
+	if (OutNeedsDepth) *OutNeedsDepth = false;
+	if (OutNeedsSegmentation) *OutNeedsSegmentation = false;
+
+	const FComfyNodeDatabase& DB = FComfyNodeDatabase::Get();
+
+	TSharedPtr<FJsonObject> PromptRoot = MakeShareable(new FJsonObject);
+
+	for (const FString& NodeId : RequiredNodes)
+	{
+		const int32* IdxPtr = NodeIndexMap.Find(NodeId);
+		if (!IdxPtr) continue;
+		const FGraphNode& Node = Nodes[*IdxPtr];
+
+		// Skip UE source nodes in the JSON — they're handled by the panel
+		if (Node.IsUESourceNode())
+		{
+			if (OutNeedsViewport && Node.ClassType == UEViewportClassType) *OutNeedsViewport = true;
+			if (OutNeedsDepth && Node.ClassType == UEDepthMapClassType) *OutNeedsDepth = true;
+			if (OutNeedsSegmentation && Node.ClassType == UESegmentationClassType) *OutNeedsSegmentation = true;
+			if (OutCameraDescription && Node.ClassType == UECameraDataClassType)
+			{
+				// Camera description is computed at submission time by the panel
+			}
+			continue;
+		}
+		if (Node.IsReroute()) continue;
+
+		// Build the node JSON
+		TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
+		NodeObj->SetStringField(TEXT("class_type"), Node.ClassType);
+
+		TSharedPtr<FJsonObject> MetaObj = MakeShareable(new FJsonObject);
+		MetaObj->SetStringField(TEXT("title"), Node.Title);
+		NodeObj->SetObjectField(TEXT("_meta"), MetaObj);
+
+		TSharedPtr<FJsonObject> InputsObj = MakeShareable(new FJsonObject);
+
+		// Widget values
+		for (const FString& WidgetName : Node.WidgetOrder)
+		{
+			const FString* Val = Node.WidgetValues.Find(WidgetName);
+			if (!Val) continue;
+
+			// Try to preserve numeric types
+			const FComfyInputDef* InputDef = Node.WidgetInputDefs.Find(WidgetName);
+			if (InputDef)
+			{
+				if (InputDef->Type == TEXT("INT"))
+				{
+					InputsObj->SetNumberField(WidgetName, FCString::Atoi(**Val));
+				}
+				else if (InputDef->Type == TEXT("FLOAT"))
+				{
+					InputsObj->SetNumberField(WidgetName, FCString::Atof(**Val));
+				}
+				else if (InputDef->Type == TEXT("BOOLEAN") || InputDef->Type == TEXT("BOOL"))
+				{
+					InputsObj->SetBoolField(WidgetName, Val->Equals(TEXT("true"), ESearchCase::IgnoreCase));
+				}
+				else
+				{
+					InputsObj->SetStringField(WidgetName, *Val);
+				}
+			}
+			else
+			{
+				InputsObj->SetStringField(WidgetName, *Val);
+			}
+		}
+
+		// Link inputs (connections)
+		for (const FGraphConnection& Conn : Connections)
+		{
+			if (Conn.TargetNodeId != NodeId) continue;
+
+			// Resolve through reroute nodes
+			FString RealSourceId = Conn.SourceNodeId;
+			int32 RealOutputIdx = Conn.SourceOutputIndex;
+			ResolveRerouteSource(RealSourceId, RealSourceId, RealOutputIdx);
+
+			TArray<TSharedPtr<FJsonValue>> LinkRef;
+			LinkRef.Add(MakeShareable(new FJsonValueString(RealSourceId)));
+			LinkRef.Add(MakeShareable(new FJsonValueNumber(RealOutputIdx)));
+			InputsObj->SetArrayField(Conn.TargetInputName, LinkRef);
+		}
+
+		NodeObj->SetObjectField(TEXT("inputs"), InputsObj);
+		PromptRoot->SetObjectField(NodeId, NodeObj);
+	}
+
+	return PromptRoot;
 }
 
 void SWorkflowGraphEditor::NotifySelectionChanged()

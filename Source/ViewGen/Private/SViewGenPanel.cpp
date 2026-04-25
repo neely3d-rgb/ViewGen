@@ -411,6 +411,10 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 									{
 										OnGraphSelectionChanged();
 									})
+									.OnRunToNode_Lambda([this](const FString& NodeId)
+									{
+										OnRunToNodeRequested(NodeId);
+									})
 								]
 							]
 
@@ -6851,6 +6855,72 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 	return FReply::Handled();
 }
 
+void SViewGenPanel::OnRunToNodeRequested(const FString& TargetNodeId)
+{
+	if (!GraphEditor.IsValid() || !HttpClient.IsValid())
+	{
+		UpdateStatusText(TEXT("Graph editor or HTTP client not available"));
+		return;
+	}
+
+	if (HttpClient->IsRequestInProgress())
+	{
+		UpdateStatusText(TEXT("A generation is already in progress"));
+		return;
+	}
+
+	// Export only the subgraph upstream of the target node
+	bool bNeedsViewport = false;
+	bool bNeedsDepth = false;
+	bool bNeedsSegmentation = false;
+	FString CameraDescription;
+
+	TSharedPtr<FJsonObject> PartialWorkflow = GraphEditor->ExportPartialWorkflow(
+		TargetNodeId, &bNeedsViewport, &bNeedsDepth, &CameraDescription, &bNeedsSegmentation);
+
+	if (!PartialWorkflow.IsValid() || PartialWorkflow->Values.Num() == 0)
+	{
+		UpdateStatusText(TEXT("No nodes to execute for the selected target"));
+		return;
+	}
+
+	// Find the target node's title for the status message
+	FString TargetTitle = TargetNodeId;
+	const FGraphNode* TargetNode = GraphEditor->FindNodeById(TargetNodeId);
+	if (TargetNode)
+	{
+		TargetTitle = TargetNode->Title;
+	}
+
+	// Handle UE source node captures if needed (same as full graph generate)
+	// For now, submit directly — viewport/depth capture can be added later
+	// if the partial graph contains UE source nodes
+
+	UpdateStatusText(FString::Printf(TEXT("Running to '%s' (%d nodes)..."),
+		*TargetTitle, PartialWorkflow->Values.Num()));
+
+	HttpClient->SubmitWorkflowDirect(PartialWorkflow);
+
+	// Start progress polling
+	if (GEditor && !ProgressPollTimer.IsValid())
+	{
+		GEditor->GetTimerManager()->SetTimer(
+			ProgressPollTimer,
+			FTimerDelegate::CreateLambda([this]()
+			{
+				if (HttpClient.IsValid())
+				{
+					HttpClient->PollProgress();
+				}
+			}),
+			1.0f,
+			true
+		);
+	}
+
+	bIsGenerating = true;
+}
+
 void SViewGenPanel::SubmitNextStagedWorkflow()
 {
 	CurrentStageIndex++;
@@ -8321,10 +8391,55 @@ TSharedRef<SWidget> SViewGenPanel::BuildResultGalleryPanel()
 			.AutoHeight()
 			.Padding(2.0f, 2.0f, 2.0f, 4.0f)
 			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("GalleryLabel", "Results"))
-				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.8f, 0.7f, 0.3f)))
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("GalleryLabel", "Results"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.8f, 0.7f, 0.3f)))
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SButton)
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.ContentPadding(FMargin(1.0f))
+					.ToolTipText(LOCTEXT("ClearResultsTip", "Clear all results"))
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						// Unroot all thumbnail textures to prevent memory leaks
+						for (FHistoryEntry& Entry : ImageHistory)
+						{
+							if (Entry.Texture && ::IsValid(Entry.Texture) && Entry.Texture->IsRooted())
+							{
+								Entry.Texture->RemoveFromRoot();
+							}
+						}
+						ImageHistory.Empty();
+						HistoryIndex = -1;
+						RebuildResultGallery();
+						// Clear the main preview image
+						if (PreviewBrush.IsValid())
+						{
+							PreviewBrush->SetResourceObject(nullptr);
+						}
+						return FReply::Handled();
+					})
+					.Visibility_Lambda([this]()
+					{
+						return ImageHistory.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+					})
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ClearResultsBtn", "Clear"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+						.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+					]
+				]
 			]
 
 			+ SVerticalBox::Slot()
@@ -8490,6 +8605,62 @@ void SViewGenPanel::RebuildResultGallery()
 								: FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
 						})
 						.Padding(0.0f)
+					]
+
+					// Close button (top-right corner)
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Right)
+					.VAlign(VAlign_Top)
+					.Padding(0.0f, 2.0f, 2.0f, 0.0f)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.0f))
+						.ToolTipText(LOCTEXT("RemoveResultTip", "Remove this result"))
+						.OnClicked_Lambda([this, EntryIndex]() -> FReply
+						{
+							if (ImageHistory.IsValidIndex(EntryIndex))
+							{
+								FHistoryEntry& Entry = ImageHistory[EntryIndex];
+								if (Entry.Texture && ::IsValid(Entry.Texture) && Entry.Texture->IsRooted())
+								{
+									Entry.Texture->RemoveFromRoot();
+								}
+								ImageHistory.RemoveAt(EntryIndex);
+
+								// Adjust history index
+								if (ImageHistory.Num() == 0)
+								{
+									HistoryIndex = -1;
+									if (PreviewBrush.IsValid())
+									{
+										PreviewBrush->SetResourceObject(nullptr);
+									}
+								}
+								else if (HistoryIndex >= ImageHistory.Num())
+								{
+									HistoryIndex = ImageHistory.Num() - 1;
+									ShowHistoryEntry(HistoryIndex);
+								}
+								else if (HistoryIndex == EntryIndex)
+								{
+									ShowHistoryEntry(FMath::Min(HistoryIndex, ImageHistory.Num() - 1));
+								}
+								else if (HistoryIndex > EntryIndex)
+								{
+									HistoryIndex--;
+								}
+
+								RebuildResultGallery();
+							}
+							return FReply::Handled();
+						})
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("X")))
+							.Font(FCoreStyle::GetDefaultFontStyle("Bold", 7))
+							.ColorAndOpacity(FSlateColor(FLinearColor(0.8f, 0.3f, 0.3f)))
+						]
 					]
 
 					// Video badge (bottom-left, only for video results)
