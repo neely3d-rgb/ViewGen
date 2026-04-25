@@ -2,7 +2,9 @@
 
 An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer as inputs for generative AI workflows. Connect to any REST-based AI backend (ComfyUI, Meshy, etc.) with LoRA support, real-time preview, and integrated rendering.
 
-![ViewGen Screenshot](Docs/screenshot_placeholder.png)
+
+<img width="1919" height="1032" alt="2026-04-24 19_30_16-ViewGen" src="https://github.com/user-attachments/assets/9c8e8bab-23f4-4f01-93dc-50020057a068" />
+
 
 ## Features
 
