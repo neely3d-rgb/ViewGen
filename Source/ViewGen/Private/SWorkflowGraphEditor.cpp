@@ -224,6 +224,7 @@ void SWorkflowGraphEditor::ClearGraph()
 
 FString SWorkflowGraphEditor::AddNodeByType(const FString& ClassType, FVector2D GraphPosition)
 {
+	PushUndoSnapshot();
 	FString NodeId = FString::FromInt(NextAutoNodeId++);
 
 	// Check for UE source nodes first
@@ -265,6 +266,8 @@ FString SWorkflowGraphEditor::AddNodeByType(const FString& ClassType, FVector2D 
 
 void SWorkflowGraphEditor::RemoveNode(const FString& NodeId)
 {
+	PushUndoSnapshot();
+
 	RemoveConnectionsForNode(NodeId);
 
 	const int32* IdxPtr = NodeIndexMap.Find(NodeId);
@@ -299,6 +302,8 @@ void SWorkflowGraphEditor::RemoveNode(const FString& NodeId)
 bool SWorkflowGraphEditor::AddConnection(const FString& SourceNodeId, int32 SourceOutputIndex,
 	const FString& TargetNodeId, const FString& TargetInputName)
 {
+	PushUndoSnapshot();
+
 	// Validate nodes exist
 	if (!NodeIndexMap.Contains(SourceNodeId) || !NodeIndexMap.Contains(TargetNodeId))
 		return false;
@@ -1930,6 +1935,7 @@ FReply SWorkflowGraphEditor::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 			int32 HitConnIdx = HitTestConnection(LocalPos);
 			if (HitConnIdx >= 0 && HitConnIdx < Connections.Num())
 			{
+				PushUndoSnapshot();
 				Connections.RemoveAt(HitConnIdx);
 				HoveredConnectionIndex = -1;
 				NotifyGraphChanged();
@@ -1996,6 +2002,7 @@ FReply SWorkflowGraphEditor::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 				SelectedNodeIds.Add(HitNodeId);
 				NotifySelectionChanged();
 
+				PushUndoSnapshot();
 				InteractionMode = EInteractionMode::DraggingNode;
 				DraggedNodeId = HitNodeId;
 				DragOffset = LocalToGraph(LocalPos) - HitNode.Position;
@@ -2394,15 +2401,42 @@ FReply SWorkflowGraphEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEv
 		return FReply::Handled();
 	}
 
+	// Copy: Ctrl+C
+	if (InKeyEvent.GetKey() == EKeys::C && InKeyEvent.IsControlDown())
+	{
+		CopySelectedNodes();
+		return FReply::Handled();
+	}
+
+	// Paste: Ctrl+V
+	if (InKeyEvent.GetKey() == EKeys::V && InKeyEvent.IsControlDown())
+	{
+		PasteNodes();
+		return FReply::Handled();
+	}
+
+	// Cut: Ctrl+X
+	if (InKeyEvent.GetKey() == EKeys::X && InKeyEvent.IsControlDown())
+	{
+		CutSelectedNodes();
+		return FReply::Handled();
+	}
+
 	if (InKeyEvent.GetKey() == EKeys::Delete || InKeyEvent.GetKey() == EKeys::BackSpace)
 	{
-		// Delete selected nodes
-		TArray<FString> ToDelete = SelectedNodeIds.Array();
-		SelectedNodeIds.Empty();
-		NotifySelectionChanged();
-		for (const FString& NodeId : ToDelete)
+		if (SelectedNodeIds.Num() > 0)
 		{
-			RemoveNode(NodeId);
+			// Push a single undo snapshot before deleting all selected nodes
+			PushUndoSnapshot();
+			TArray<FString> ToDelete = SelectedNodeIds.Array();
+			SelectedNodeIds.Empty();
+			NotifySelectionChanged();
+			bIsRestoringSnapshot = true; // Suppress per-node undo pushes
+			for (const FString& NodeId : ToDelete)
+			{
+				RemoveNode(NodeId);
+			}
+			bIsRestoringSnapshot = false;
 		}
 		return FReply::Handled();
 	}
@@ -2422,6 +2456,7 @@ FReply SWorkflowGraphEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEv
 	if (InKeyEvent.GetKey() == EKeys::L && InKeyEvent.IsControlDown())
 	{
 		// Auto-layout
+		PushUndoSnapshot();
 		AutoLayout();
 		return FReply::Handled();
 	}
@@ -2429,6 +2464,7 @@ FReply SWorkflowGraphEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEv
 	if (InKeyEvent.GetKey() == EKeys::D && InKeyEvent.IsControlDown())
 	{
 		// Duplicate selected nodes
+		PushUndoSnapshot();
 		if (SelectedNodeIds.Num() > 0)
 		{
 			// Map from original node ID -> new cloned node ID
@@ -2456,7 +2492,9 @@ FReply SWorkflowGraphEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEv
 				NewNode.WidgetInputDefs = OrigNode.WidgetInputDefs;
 				NewNode.WidgetOrder = OrigNode.WidgetOrder;
 				NewNode.InputPins = OrigNode.InputPins;
+				for (FGraphPin& Pin : NewNode.InputPins) { Pin.OwnerNodeId = NewId; }
 				NewNode.OutputPins = OrigNode.OutputPins;
+				for (FGraphPin& Pin : NewNode.OutputPins) { Pin.OwnerNodeId = NewId; }
 				NewNode.HeaderColor = OrigNode.HeaderColor;
 				NewNode.bSelected = false;
 				NewNode.NodeDef = OrigNode.NodeDef;
@@ -5440,13 +5478,6 @@ void SWorkflowGraphEditor::BuildPresetGraph()
 void SWorkflowGraphEditor::NotifyGraphChanged()
 {
 	bGraphDirty = true;
-
-	// Push undo snapshot (unless we're in the middle of restoring one)
-	if (!bIsRestoringSnapshot)
-	{
-		PushUndoSnapshot();
-	}
-
 	OnGraphChanged.ExecuteIfBound();
 }
 
@@ -5456,6 +5487,10 @@ void SWorkflowGraphEditor::NotifyGraphChanged()
 
 void SWorkflowGraphEditor::PushUndoSnapshot()
 {
+	// Saves the CURRENT state as a snapshot that can be restored later.
+	// Must be called BEFORE making a change.
+	if (bIsRestoringSnapshot) return;
+
 	TSharedPtr<FJsonObject> Snapshot = SerializeGraph();
 	if (!Snapshot.IsValid()) return;
 
@@ -5467,7 +5502,7 @@ void SWorkflowGraphEditor::PushUndoSnapshot()
 		UndoStack.RemoveAt(0);
 	}
 
-	// Any new change invalidates the redo stack
+	// Any new action invalidates the redo stack
 	RedoStack.Empty();
 }
 
@@ -5516,6 +5551,131 @@ void SWorkflowGraphEditor::Redo()
 
 	bGraphDirty = true;
 	OnGraphChanged.ExecuteIfBound();
+}
+
+// ============================================================================
+// Copy / Paste / Cut
+// ============================================================================
+
+void SWorkflowGraphEditor::CopySelectedNodes()
+{
+	if (SelectedNodeIds.Num() == 0) return;
+
+	Clipboard = MakeShareable(new FClipboardData());
+
+	// Calculate center of selection for paste offset
+	FVector2D Center = FVector2D::ZeroVector;
+	int32 Count = 0;
+	for (const FString& NodeId : SelectedNodeIds)
+	{
+		const int32* IdxPtr = NodeIndexMap.Find(NodeId);
+		if (!IdxPtr) continue;
+		Center += Nodes[*IdxPtr].Position;
+		Count++;
+	}
+	if (Count > 0) Center /= Count;
+	Clipboard->CenterOffset = Center;
+
+	// Copy selected nodes (deep copy, strip selection state)
+	for (const FString& NodeId : SelectedNodeIds)
+	{
+		const int32* IdxPtr = NodeIndexMap.Find(NodeId);
+		if (!IdxPtr) continue;
+
+		FGraphNode Copy = Nodes[*IdxPtr];
+		Copy.bSelected = false;
+		Copy.ThumbnailBrush.Reset();
+		Copy.ThumbnailTexture = nullptr;
+		Copy.MeshPreview = nullptr;
+		Clipboard->Nodes.Add(MoveTemp(Copy));
+	}
+
+	// Copy connections that exist entirely within the selection
+	for (const FGraphConnection& Conn : Connections)
+	{
+		if (SelectedNodeIds.Contains(Conn.SourceNodeId) &&
+			SelectedNodeIds.Contains(Conn.TargetNodeId))
+		{
+			Clipboard->Connections.Add(Conn);
+		}
+	}
+}
+
+void SWorkflowGraphEditor::PasteNodes()
+{
+	if (!Clipboard.IsValid() || Clipboard->Nodes.Num() == 0) return;
+
+	PushUndoSnapshot();
+	const FVector2D PasteOffset(60.0f, 60.0f);
+
+	// Map from clipboard node ID -> new node ID
+	TMap<FString, FString> IdRemap;
+	TSet<FString> NewSelectedIds;
+
+	for (const FGraphNode& ClipNode : Clipboard->Nodes)
+	{
+		FString NewId = FString::FromInt(NextAutoNodeId++);
+		IdRemap.Add(ClipNode.Id, NewId);
+
+		FGraphNode NewNode = ClipNode;
+		NewNode.Id = NewId;
+		NewNode.Position = ClipNode.Position - Clipboard->CenterOffset + Clipboard->CenterOffset + PasteOffset;
+		NewNode.bSelected = false;
+
+		// Update pin ownership to the new node ID
+		for (FGraphPin& Pin : NewNode.InputPins) { Pin.OwnerNodeId = NewId; }
+		for (FGraphPin& Pin : NewNode.OutputPins) { Pin.OwnerNodeId = NewId; }
+
+		// Don't carry over thumbnails or mesh previews
+		NewNode.ThumbnailBrush.Reset();
+		NewNode.ThumbnailTexture = nullptr;
+		NewNode.MeshPreview = nullptr;
+
+		int32 NewIdx = Nodes.Add(MoveTemp(NewNode));
+		NodeIndexMap.Add(NewId, NewIdx);
+		NewSelectedIds.Add(NewId);
+	}
+
+	// Recreate internal connections with remapped IDs
+	for (const FGraphConnection& Conn : Clipboard->Connections)
+	{
+		const FString* NewSourceId = IdRemap.Find(Conn.SourceNodeId);
+		const FString* NewTargetId = IdRemap.Find(Conn.TargetNodeId);
+		if (NewSourceId && NewTargetId)
+		{
+			FGraphConnection NewConn;
+			NewConn.SourceNodeId = *NewSourceId;
+			NewConn.SourceOutputIndex = Conn.SourceOutputIndex;
+			NewConn.TargetNodeId = *NewTargetId;
+			NewConn.TargetInputName = Conn.TargetInputName;
+			Connections.Add(NewConn);
+		}
+	}
+
+	// Shift the clipboard center so repeated pastes cascade
+	Clipboard->CenterOffset -= PasteOffset;
+
+	// Select pasted nodes
+	SelectedNodeIds = MoveTemp(NewSelectedIds);
+	NotifySelectionChanged();
+	NotifyGraphChanged();
+}
+
+void SWorkflowGraphEditor::CutSelectedNodes()
+{
+	CopySelectedNodes();
+
+	// Push a single undo snapshot before deleting all cut nodes
+	PushUndoSnapshot();
+	TArray<FString> ToDelete = SelectedNodeIds.Array();
+	SelectedNodeIds.Empty();
+	NotifySelectionChanged();
+	bIsRestoringSnapshot = true; // Suppress per-node undo pushes
+	for (const FString& NodeId : ToDelete)
+	{
+		RemoveNode(NodeId);
+	}
+	bIsRestoringSnapshot = false;
 }
 
 void SWorkflowGraphEditor::NotifySelectionChanged()

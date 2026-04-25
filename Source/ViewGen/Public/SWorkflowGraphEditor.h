@@ -382,7 +382,22 @@ public:
 	bool CanUndo() const { return UndoStack.Num() > 0; }
 	/** Returns true if there are redo states available. */
 	bool CanRedo() const { return RedoStack.Num() > 0; }
+	/** Copy selected nodes to the clipboard. */
+	void CopySelectedNodes();
+	/** Paste nodes from the clipboard at the current mouse position or with an offset. */
+	void PasteNodes();
+	/** Cut selected nodes (copy + delete). */
+	void CutSelectedNodes();
 private:
+	// ---- Clipboard ----
+	/** Serialized clipboard data: nodes + connections for the copied selection. */
+	struct FClipboardData
+	{
+		TArray<FGraphNode> Nodes;
+		TArray<FGraphConnection> Connections;
+		FVector2D CenterOffset; // Center of the copied selection for paste positioning
+	};
+	TSharedPtr<FClipboardData> Clipboard;
 
 	// ---- Interaction State ----
 	enum class EInteractionMode : uint8
