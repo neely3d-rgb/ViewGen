@@ -462,6 +462,17 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 							[
 								SNew(SButton)
+								.Text(FText::FromString(TEXT("Cancel")))
+								.ToolTipText(FText::FromString(TEXT("Cancel the current generation and interrupt ComfyUI")))
+								.OnClicked(this, &SViewGenPanel::OnCancelClicked)
+								.IsEnabled_Lambda([this]() { return bIsGenerating; })
+							]
+
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+							[
+								SNew(SButton)
 								.Text(FText::FromString(TEXT("Auto-Layout")))
 								.ToolTipText(FText::FromString(TEXT("Automatically arrange nodes left-to-right (Ctrl+L)")))
 								.OnClicked_Lambda([this]() -> FReply
@@ -7300,6 +7311,17 @@ FReply SViewGenPanel::OnGraphEditorFullscreen()
 					return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0
 						&& HttpClient.IsValid() && !HttpClient->IsRequestInProgress();
 				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Cancel")))
+				.ToolTipText(FText::FromString(TEXT("Cancel the current generation and interrupt ComfyUI")))
+				.OnClicked(this, &SViewGenPanel::OnCancelClicked)
+				.IsEnabled_Lambda([this]() { return bIsGenerating; })
 			]
 
 			+ SHorizontalBox::Slot()
