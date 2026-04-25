@@ -2871,148 +2871,14 @@ void SWorkflowGraphEditor::ShowAddNodeMenu(FVector2D ScreenPos, FVector2D GraphP
 		return;
 	}
 
-	// Build the full category menu widget (scrollable, with categories)
-	TSharedRef<SWidget> CategoryMenu = BuildNodeCategoryMenu(GraphPos);
-
-	// Build a flat list of all nodes for search filtering
-	struct FSearchableNode { FString ClassType; FString DisplayName; FString Category; };
-	TSharedRef<TArray<FSearchableNode>> AllNodes = MakeShareable(new TArray<FSearchableNode>());
-	for (const auto& Pair : DB.GetAllNodes())
-	{
-		FSearchableNode Entry;
-		Entry.ClassType = Pair.Key;
-		Entry.DisplayName = Pair.Value.DisplayName;
-		Entry.Category = Pair.Value.Category;
-		AllNodes->Add(MoveTemp(Entry));
-	}
-	// Add UE source nodes
-	auto AddUENode = [&AllNodes](const FString& ClassType, const FString& DisplayName)
-	{
-		FSearchableNode Entry;
-		Entry.ClassType = ClassType;
-		Entry.DisplayName = DisplayName;
-		Entry.Category = TEXT("Unreal Engine");
-		AllNodes->Add(MoveTemp(Entry));
-	};
-	AddUENode(UEViewportClassType, TEXT("UE Viewport Capture"));
-	AddUENode(UEDepthMapClassType, TEXT("UE Depth Map"));
-	AddUENode(UECameraDataClassType, TEXT("UE Camera Data"));
-	AddUENode(UESegmentationClassType, TEXT("UE Segmentation Mask"));
-	AddUENode(UEMeshyImportClassType, TEXT("Meshy Import to Level"));
-	AddUENode(UESave3DModelClassType, TEXT("UE Save 3D Model"));
-	AddUENode(UE3DLoaderClassType, TEXT("UE 3D Loader"));
-	AddUENode(UEImageBridgeClassType, TEXT("UE Image Bridge"));
-	AddUENode(UE3DAssetExportClassType, TEXT("UE 3D Asset Export"));
-	AddUENode(UEPromptAdherenceClassType, TEXT("UE Prompt Adherence"));
-	AddUENode(UEImageUpresClassType, TEXT("UE Image Upres"));
-	AddUENode(UESequenceClassType, TEXT("UE Sequence"));
-	AddUENode(UEVideoToImageClassType, TEXT("UE Video to Image"));
-
-	AllNodes->Sort([](const FSearchableNode& A, const FSearchableNode& B) { return A.DisplayName < B.DisplayName; });
-
-	// Search results list container (initially hidden)
-	TSharedRef<SVerticalBox> SearchResultsBox = SNew(SVerticalBox);
-
-	// Wrap the category menu and search results in a switcher
-	TSharedRef<SWidgetSwitcher> ContentSwitcher = SNew(SWidgetSwitcher)
-		.WidgetIndex(0) // 0 = category menu, 1 = search results
-		+ SWidgetSwitcher::Slot() [ CategoryMenu ]
-		+ SWidgetSwitcher::Slot()
-		[
-			SNew(SScrollBox)
-			+ SScrollBox::Slot()
-			[
-				SearchResultsBox
-			]
-		];
-
-	// Composite widget: pinned search box on top, scrollable content below
-	TSharedRef<SWidget> MenuWidget = SNew(SBox)
-		.MaxDesiredHeight(500.0f)
-		.MinDesiredWidth(300.0f)
-		[
-			SNew(SVerticalBox)
-
-			// Pinned search box (always visible)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(4.0f)
-			[
-				SNew(SSearchBox)
-				.HintText(FText::FromString(TEXT("Search nodes...")))
-				.OnTextChanged_Lambda([this, AllNodes, SearchResultsBox, ContentSwitcher, GraphPos](const FText& Text)
-				{
-					FString Query = Text.ToString().TrimStartAndEnd();
-					if (Query.IsEmpty())
-					{
-						// Show category menu when search is empty
-						ContentSwitcher->SetActiveWidgetIndex(0);
-						return;
-					}
-
-					// Switch to search results
-					ContentSwitcher->SetActiveWidgetIndex(1);
-					SearchResultsBox->ClearChildren();
-
-					FString LowerQuery = Query.ToLower();
-					int32 Count = 0;
-					for (const auto& Node : *AllNodes)
-					{
-						if (Count >= 50) break; // Cap results
-						if (Node.DisplayName.ToLower().Contains(LowerQuery) ||
-							Node.ClassType.ToLower().Contains(LowerQuery) ||
-							Node.Category.ToLower().Contains(LowerQuery))
-						{
-							FString ClassType = Node.ClassType;
-							FString Label = FString::Printf(TEXT("%s  [%s]"), *Node.DisplayName, *Node.Category);
-							SearchResultsBox->AddSlot()
-								.AutoHeight()
-								[
-									SNew(SButton)
-									.ButtonStyle(FAppStyle::Get(), "Menu.Button")
-									.ContentPadding(FMargin(4.0f, 2.0f))
-									.OnClicked_Lambda([this, ClassType, GraphPos]() -> FReply
-									{
-										AddNodeByType(ClassType, GraphPos);
-										FSlateApplication::Get().DismissAllMenus();
-										return FReply::Handled();
-									})
-									[
-										SNew(STextBlock)
-										.Text(FText::FromString(Label))
-										.TextStyle(FAppStyle::Get(), "Menu.Label")
-									]
-								];
-							Count++;
-						}
-					}
-
-					if (Count == 0)
-					{
-						SearchResultsBox->AddSlot()
-							.AutoHeight()
-							.Padding(8.0f, 4.0f)
-							[
-								SNew(STextBlock)
-								.Text(FText::FromString(TEXT("No matching nodes")))
-								.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-							];
-					}
-				})
-			]
-
-			// Scrollable content area
-			+ SVerticalBox::Slot()
-			.FillHeight(1.0f)
-			[
-				ContentSwitcher
-			]
-		];
+	// Build the category menu and push it as a popup.
+	// FMenuBuilder provides a built-in search bar automatically.
+	TSharedRef<SWidget> MenuContent = BuildNodeCategoryMenu(GraphPos);
 
 	FSlateApplication::Get().PushMenu(
 		SharedThis(this),
 		FWidgetPath(),
-		MenuWidget,
+		MenuContent,
 		ScreenPos,
 		FPopupTransitionEffect::ContextMenu
 	);
@@ -3024,7 +2890,7 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildNodeCategoryMenu(FVector2D GraphP
 
 	FMenuBuilder MenuBuilder(true, nullptr);
 
-	// Search box at top (placeholder — category submenu for now)
+	// Category menu content
 	// Group by category
 	TArray<FString> Categories = DB.GetCategories();
 
