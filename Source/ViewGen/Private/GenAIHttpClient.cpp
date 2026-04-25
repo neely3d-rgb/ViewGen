@@ -47,7 +47,7 @@ void FGenAIHttpClient::FetchAvailableModels()
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
 	Request->SetURL(URL);
 	Request->SetVerb(TEXT("GET"));
-	Request->SetTimeout(10.0f);
+	Request->SetTimeout(60.0f); // /object_info can be very large with many custom nodes
 
 	Request->OnProcessRequestComplete().BindLambda(
 		[this](FHttpRequestPtr Req, FHttpResponsePtr Resp, bool bConnected)
@@ -75,6 +75,8 @@ void FGenAIHttpClient::FetchAvailableModels()
 		}
 
 		// Populate the global node database for the graph editor
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: /object_info response size: %d bytes, %d top-level entries"),
+			Resp->GetContentAsString().Len(), Root->Values.Num());
 		FComfyNodeDatabase::Get().ParseObjectInfo(Root);
 
 		// Helper: extract string array from node_info -> input -> required -> field_name

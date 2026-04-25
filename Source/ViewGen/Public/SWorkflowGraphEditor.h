@@ -362,6 +362,28 @@ private:
 	TArray<FGraphConnection> Connections;
 	int32 NextAutoNodeId = 100;
 
+	// ---- Undo / Redo ----
+	/** Snapshot-based undo stack. Each entry is a serialized graph JSON. */
+	TArray<TSharedPtr<FJsonObject>> UndoStack;
+	TArray<TSharedPtr<FJsonObject>> RedoStack;
+	static constexpr int32 MaxUndoLevels = 50;
+	/** True while restoring a snapshot — suppresses pushing to the undo stack. */
+	bool bIsRestoringSnapshot = false;
+	/** Push the current graph state onto the undo stack. Called by NotifyGraphChanged. */
+	void PushUndoSnapshot();
+	/** Restore the graph from a JSON snapshot without triggering a new undo push. */
+	void RestoreSnapshot(TSharedPtr<FJsonObject> Snapshot);
+public:
+	/** Undo the last graph change. */
+	void Undo();
+	/** Redo the last undone change. */
+	void Redo();
+	/** Returns true if there are undo states available. */
+	bool CanUndo() const { return UndoStack.Num() > 0; }
+	/** Returns true if there are redo states available. */
+	bool CanRedo() const { return RedoStack.Num() > 0; }
+private:
+
 	// ---- Interaction State ----
 	enum class EInteractionMode : uint8
 	{

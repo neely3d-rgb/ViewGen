@@ -2379,6 +2379,21 @@ FReply SWorkflowGraphEditor::OnMouseButtonDoubleClick(const FGeometry& MyGeometr
 
 FReply SWorkflowGraphEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+	// Undo: Ctrl+Z
+	if (InKeyEvent.GetKey() == EKeys::Z && InKeyEvent.IsControlDown() && !InKeyEvent.IsShiftDown())
+	{
+		Undo();
+		return FReply::Handled();
+	}
+
+	// Redo: Ctrl+Y or Ctrl+Shift+Z
+	if ((InKeyEvent.GetKey() == EKeys::Y && InKeyEvent.IsControlDown()) ||
+		(InKeyEvent.GetKey() == EKeys::Z && InKeyEvent.IsControlDown() && InKeyEvent.IsShiftDown()))
+	{
+		Redo();
+		return FReply::Handled();
+	}
+
 	if (InKeyEvent.GetKey() == EKeys::Delete || InKeyEvent.GetKey() == EKeys::BackSpace)
 	{
 		// Delete selected nodes
@@ -3266,11 +3281,19 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildFilteredNodeMenu(FVector2D GraphP
 
 	TSharedPtr<FFilteredCategoryNode> FilteredRoot = MakeShareable(new FFilteredCategoryNode());
 	int32 TotalCompatible = 0;
+	TSet<FString> SeenDisplayNames; // Deduplicate nodes with identical display names
 
 	const TMap<FString, FComfyNodeDef>& AllNodes = DB.GetAllNodes();
 	for (const auto& Pair : AllNodes)
 	{
 		const FComfyNodeDef* Def = &Pair.Value;
+
+		// Skip duplicate display names (some ComfyUI nodes register aliases)
+		FString DedupeKey = Def->DisplayName + TEXT("::") + Def->Category;
+		if (SeenDisplayNames.Contains(DedupeKey))
+		{
+			continue;
+		}
 
 		FCompatibleEntry Entry;
 		Entry.Def = Def;
@@ -3306,6 +3329,8 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildFilteredNodeMenu(FVector2D GraphP
 
 		if (Entry.MatchedPinIndex >= 0)
 		{
+			SeenDisplayNames.Add(DedupeKey);
+
 			FString Cat = Def->Category.IsEmpty() ? TEXT("Other") : Def->Category;
 			TArray<FString> Segments;
 			Cat.ParseIntoArray(Segments, TEXT("/"), true);
@@ -4390,9 +4415,206 @@ FString SWorkflowGraphEditor::GetMeshySourceImageFilename() const
 	return FString();
 }
 
+/**
+ * Detect whether a JSON object is a ComfyUI Web UI export (contains "nodes" array
+ * and "links" array) vs. the API format (flat dictionary of node_id -> {class_type, inputs}).
+ * If it's Web UI format, convert it to API format so the import logic can handle both.
+ */
+static TSharedPtr<FJsonObject> ConvertWebUIToAPIFormat(TSharedPtr<FJsonObject> Root,
+	TMap<FString, FVector2D>& OutPositions)
+{
+	// Web UI format detection: has "nodes" array and "links" array
+	const TArray<TSharedPtr<FJsonValue>>* NodesArray;
+	const TArray<TSharedPtr<FJsonValue>>* LinksArray;
+	if (!Root->TryGetArrayField(TEXT("nodes"), NodesArray) ||
+		!Root->TryGetArrayField(TEXT("links"), LinksArray))
+	{
+		return nullptr; // Not Web UI format
+	}
+
+	// Build a lookup: link_id -> {origin_id, origin_slot}
+	struct FLinkInfo { int64 OriginNodeId; int32 OriginSlot; FString Type; };
+	TMap<int64, FLinkInfo> LinkMap;
+	for (const auto& LinkVal : *LinksArray)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* LinkArr;
+		if (!LinkVal->TryGetArray(LinkArr) || LinkArr->Num() < 5) continue;
+
+		int64 LinkId = static_cast<int64>((*LinkArr)[0]->AsNumber());
+		FLinkInfo Info;
+		Info.OriginNodeId = static_cast<int64>((*LinkArr)[1]->AsNumber());
+		Info.OriginSlot = static_cast<int32>((*LinkArr)[2]->AsNumber());
+		Info.Type = (*LinkArr)[4]->AsString();
+		LinkMap.Add(LinkId, Info);
+	}
+
+	// Build a lookup: node_id -> outputs array (to resolve output slot index to name)
+	// Also build the API-format JSON
+	TSharedPtr<FJsonObject> APIRoot = MakeShareable(new FJsonObject);
+
+	for (const auto& NodeVal : *NodesArray)
+	{
+		const TSharedPtr<FJsonObject>* NodeObjPtr;
+		if (!NodeVal->TryGetObject(NodeObjPtr)) continue;
+		TSharedPtr<FJsonObject> NodeObj = *NodeObjPtr;
+
+		int64 NodeId = static_cast<int64>(NodeObj->GetNumberField(TEXT("id")));
+		FString NodeIdStr = FString::Printf(TEXT("%lld"), NodeId);
+		FString ClassType = NodeObj->GetStringField(TEXT("type"));
+
+		// Skip special Web UI nodes that have no functional role in the workflow
+		if (ClassType.StartsWith(TEXT("Reroute")) ||
+			ClassType == TEXT("Note") ||
+			ClassType == TEXT("MarkdownNote") ||
+			ClassType == TEXT("PrimitiveNode") ||
+			ClassType == TEXT("GroupNode"))
+		{
+			continue;
+		}
+
+		// Extract position
+		const TArray<TSharedPtr<FJsonValue>>* PosArr;
+		if (NodeObj->TryGetArrayField(TEXT("pos"), PosArr) && PosArr->Num() >= 2)
+		{
+			float X = static_cast<float>((*PosArr)[0]->AsNumber());
+			float Y = static_cast<float>((*PosArr)[1]->AsNumber());
+			OutPositions.Add(NodeIdStr, FVector2D(X, Y));
+		}
+
+		// Build the API-format node object
+		TSharedPtr<FJsonObject> APINode = MakeShareable(new FJsonObject);
+		APINode->SetStringField(TEXT("class_type"), ClassType);
+
+		// _meta with title
+		FString Title;
+		if (NodeObj->TryGetStringField(TEXT("title"), Title) && !Title.IsEmpty())
+		{
+			TSharedPtr<FJsonObject> Meta = MakeShareable(new FJsonObject);
+			Meta->SetStringField(TEXT("title"), Title);
+			APINode->SetObjectField(TEXT("_meta"), Meta);
+		}
+
+		// Parse widget values from the "widgets_values" array and inputs from "inputs" array
+		TSharedPtr<FJsonObject> InputsObj = MakeShareable(new FJsonObject);
+
+		// Widget values: these are positional, matching the node's input order.
+		// We'll store them as-is and let the existing import logic match them.
+		const TArray<TSharedPtr<FJsonValue>>* WidgetVals;
+		if (NodeObj->TryGetArrayField(TEXT("widgets_values"), WidgetVals))
+		{
+			// Widget values are positional — we can't reliably map them to input names
+			// without the node definition. Store them with indexed keys for now;
+			// the import logic will override with proper names from the node def.
+			// For nodes with known defs, we try to match by position later.
+		}
+
+		// Inputs array: each has "name", "type", and optionally "link" (link_id)
+		const TArray<TSharedPtr<FJsonValue>>* InputsArr;
+		if (NodeObj->TryGetArrayField(TEXT("inputs"), InputsArr))
+		{
+			for (const auto& InputVal : *InputsArr)
+			{
+				const TSharedPtr<FJsonObject>* InputObjPtr;
+				if (!InputVal->TryGetObject(InputObjPtr)) continue;
+
+				FString InputName = (*InputObjPtr)->GetStringField(TEXT("name"));
+				int64 LinkId = 0;
+
+				// "link" can be null (no connection) or a number (link_id)
+				const TSharedPtr<FJsonValue>* LinkField = (*InputObjPtr)->Values.Find(TEXT("link"));
+				if (LinkField && !(*LinkField)->IsNull())
+				{
+					LinkId = static_cast<int64>((*LinkField)->AsNumber());
+
+					// Convert to API format: input_name -> [source_node_id_string, source_slot]
+					FLinkInfo* Info = LinkMap.Find(LinkId);
+					if (Info)
+					{
+						TArray<TSharedPtr<FJsonValue>> LinkRef;
+						LinkRef.Add(MakeShareable(new FJsonValueString(
+							FString::Printf(TEXT("%lld"), Info->OriginNodeId))));
+						LinkRef.Add(MakeShareable(new FJsonValueNumber(Info->OriginSlot)));
+						InputsObj->SetArrayField(InputName, LinkRef);
+					}
+				}
+			}
+		}
+
+		// Widget values: map them to input names using the node definition
+		if (WidgetVals && WidgetVals->Num() > 0)
+		{
+			const FComfyNodeDatabase& DB = FComfyNodeDatabase::Get();
+			const FComfyNodeDef* Def = DB.FindNode(ClassType);
+			if (Def)
+			{
+				// Collect widget (non-link) input names in definition order
+				TArray<FString> WidgetInputNames;
+				for (const FComfyInputDef& InputDef : Def->Inputs)
+				{
+					if (!InputDef.IsLinkType())
+					{
+						WidgetInputNames.Add(InputDef.Name);
+					}
+				}
+
+				// Map positional widget values to named inputs
+				for (int32 i = 0; i < WidgetVals->Num() && i < WidgetInputNames.Num(); i++)
+				{
+					TSharedPtr<FJsonValue> Val = (*WidgetVals)[i];
+					if (Val->IsNull()) continue;
+
+					// Don't overwrite link-type inputs
+					if (InputsObj->HasField(WidgetInputNames[i])) continue;
+
+					// Preserve the original JSON value type
+					InputsObj->SetField(WidgetInputNames[i], Val);
+				}
+			}
+		}
+
+		APINode->SetObjectField(TEXT("inputs"), InputsObj);
+
+		// Preserve output pin info for unknown nodes (not in the database)
+		const TArray<TSharedPtr<FJsonValue>>* OutputsArr;
+		if (NodeObj->TryGetArrayField(TEXT("outputs"), OutputsArr))
+		{
+			TArray<TSharedPtr<FJsonValue>> OutputDefs;
+			for (const auto& OutVal : *OutputsArr)
+			{
+				const TSharedPtr<FJsonObject>* OutObjPtr;
+				if (!OutVal->TryGetObject(OutObjPtr)) continue;
+
+				TSharedPtr<FJsonObject> OutDef = MakeShareable(new FJsonObject);
+				OutDef->SetStringField(TEXT("name"), (*OutObjPtr)->GetStringField(TEXT("name")));
+				OutDef->SetStringField(TEXT("type"), (*OutObjPtr)->GetStringField(TEXT("type")));
+				OutputDefs.Add(MakeShareable(new FJsonValueObject(OutDef)));
+			}
+			if (OutputDefs.Num() > 0)
+			{
+				APINode->SetArrayField(TEXT("_outputs"), OutputDefs);
+			}
+		}
+
+		APIRoot->SetObjectField(NodeIdStr, APINode);
+	}
+
+	return APIRoot;
+}
+
 void SWorkflowGraphEditor::ImportWorkflowJSON(TSharedPtr<FJsonObject> Workflow)
 {
 	if (!Workflow.IsValid()) return;
+
+	// Auto-detect Web UI format and convert if needed
+	TMap<FString, FVector2D> WebUIPositions;
+	TSharedPtr<FJsonObject> ConvertedWorkflow = ConvertWebUIToAPIFormat(Workflow, WebUIPositions);
+	bool bHasPositions = WebUIPositions.Num() > 0;
+	if (ConvertedWorkflow.IsValid())
+	{
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Detected ComfyUI Web UI format — converting to API format (%d nodes)"),
+			ConvertedWorkflow->Values.Num());
+		Workflow = ConvertedWorkflow;
+	}
 
 	ClearGraph();
 
@@ -4433,12 +4655,51 @@ void SWorkflowGraphEditor::ImportWorkflowJSON(TSharedPtr<FJsonObject> Workflow)
 		}
 		else
 		{
-			// Unknown node — create minimal representation
+			// Unknown node — create representation with whatever info we have
 			Node.Id = NodeId;
 			Node.ClassType = ClassType;
 			Node.Title = Title;
 			Node.HeaderColor = GetNodeColor(ClassType);
 			Node.Size = FVector2D(GraphConstants::NodeMinWidth, GraphConstants::NodeHeaderHeight + 40.0f);
+
+			// For unknown nodes, try to create pins from the API-format inputs.
+			// Link-type inputs (arrays) become input pins; scalar values become widgets.
+			const TSharedPtr<FJsonObject>* UnkInputsObj;
+			if ((*NodeObjPtr)->TryGetObjectField(TEXT("inputs"), UnkInputsObj))
+			{
+				for (const auto& InputPair : (*UnkInputsObj)->Values)
+				{
+					const TArray<TSharedPtr<FJsonValue>>* ArrayVal;
+					if (InputPair.Value->TryGetArray(ArrayVal))
+					{
+						// Link input — create an input pin
+						FGraphPin Pin;
+						Pin.Name = InputPair.Key;
+						Pin.Type = TEXT("*"); // Wildcard type
+						Pin.bIsInput = true;
+						Pin.OwnerNodeId = NodeId;
+						Node.InputPins.Add(Pin);
+					}
+				}
+			}
+
+			// Create output pins from _outputs (preserved during Web UI conversion)
+			const TArray<TSharedPtr<FJsonValue>>* OutputDefs;
+			if ((*NodeObjPtr)->TryGetArrayField(TEXT("_outputs"), OutputDefs))
+			{
+				for (const auto& OutVal : *OutputDefs)
+				{
+					const TSharedPtr<FJsonObject>* OutObjPtr;
+					if (!OutVal->TryGetObject(OutObjPtr)) continue;
+
+					FGraphPin Pin;
+					Pin.Name = (*OutObjPtr)->GetStringField(TEXT("name"));
+					Pin.Type = (*OutObjPtr)->GetStringField(TEXT("type"));
+					Pin.bIsInput = false;
+					Pin.OwnerNodeId = NodeId;
+					Node.OutputPins.Add(Pin);
+				}
+			}
 		}
 
 		// Parse widget values from inputs
@@ -4537,8 +4798,24 @@ void SWorkflowGraphEditor::ImportWorkflowJSON(TSharedPtr<FJsonObject> Workflow)
 		}
 	}
 
-	// Auto-layout since imported workflows don't have position data
-	AutoLayout();
+	// Apply positions: use Web UI positions if available, otherwise auto-layout
+	if (bHasPositions)
+	{
+		for (FGraphNode& Node : Nodes)
+		{
+			FVector2D* Pos = WebUIPositions.Find(Node.Id);
+			if (Pos)
+			{
+				Node.Position = *Pos;
+			}
+		}
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Applied %d node positions from Web UI layout"), WebUIPositions.Num());
+	}
+	else
+	{
+		// API format has no position data — auto-layout
+		AutoLayout();
+	}
 
 	NotifyGraphChanged();
 }
@@ -5162,6 +5439,81 @@ void SWorkflowGraphEditor::BuildPresetGraph()
 
 void SWorkflowGraphEditor::NotifyGraphChanged()
 {
+	bGraphDirty = true;
+
+	// Push undo snapshot (unless we're in the middle of restoring one)
+	if (!bIsRestoringSnapshot)
+	{
+		PushUndoSnapshot();
+	}
+
+	OnGraphChanged.ExecuteIfBound();
+}
+
+// ============================================================================
+// Undo / Redo
+// ============================================================================
+
+void SWorkflowGraphEditor::PushUndoSnapshot()
+{
+	TSharedPtr<FJsonObject> Snapshot = SerializeGraph();
+	if (!Snapshot.IsValid()) return;
+
+	UndoStack.Add(Snapshot);
+
+	// Cap the stack size
+	while (UndoStack.Num() > MaxUndoLevels)
+	{
+		UndoStack.RemoveAt(0);
+	}
+
+	// Any new change invalidates the redo stack
+	RedoStack.Empty();
+}
+
+void SWorkflowGraphEditor::RestoreSnapshot(TSharedPtr<FJsonObject> Snapshot)
+{
+	if (!Snapshot.IsValid()) return;
+
+	bIsRestoringSnapshot = true;
+	DeserializeGraph(Snapshot);
+	bIsRestoringSnapshot = false;
+}
+
+void SWorkflowGraphEditor::Undo()
+{
+	if (UndoStack.Num() == 0) return;
+
+	// Save current state to redo stack before restoring
+	TSharedPtr<FJsonObject> CurrentState = SerializeGraph();
+	if (CurrentState.IsValid())
+	{
+		RedoStack.Add(CurrentState);
+	}
+
+	// Pop and restore the last undo snapshot
+	TSharedPtr<FJsonObject> Snapshot = UndoStack.Pop();
+	RestoreSnapshot(Snapshot);
+
+	bGraphDirty = true;
+	OnGraphChanged.ExecuteIfBound();
+}
+
+void SWorkflowGraphEditor::Redo()
+{
+	if (RedoStack.Num() == 0) return;
+
+	// Save current state to undo stack before restoring
+	TSharedPtr<FJsonObject> CurrentState = SerializeGraph();
+	if (CurrentState.IsValid())
+	{
+		UndoStack.Add(CurrentState);
+	}
+
+	// Pop and restore the last redo snapshot
+	TSharedPtr<FJsonObject> Snapshot = RedoStack.Pop();
+	RestoreSnapshot(Snapshot);
+
 	bGraphDirty = true;
 	OnGraphChanged.ExecuteIfBound();
 }

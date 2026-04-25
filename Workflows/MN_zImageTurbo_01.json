@@ -1,0 +1,416 @@
+{
+	"version": 1,
+	"view":
+	{
+		"offset_x": 3120.3620302120307,
+		"offset_y": -90.311463988859202,
+		"zoom": 0.30000001192092896
+	},
+	"nodes": [
+		{
+			"id": "100",
+			"class_type": "UNETLoader",
+			"title": "Load Diffusion Model",
+			"pos_x": -840,
+			"pos_y": 100,
+			"widgets":
+			{
+				"unet_name": "z_image_turbo_bf16.safetensors",
+				"weight_dtype": "default"
+			},
+			"widget_order": [
+				"unet_name",
+				"weight_dtype"
+			],
+			"input_pins": [],
+			"output_pins": [
+				{
+					"name": "MODEL",
+					"type": "MODEL"
+				}
+			]
+		},
+		{
+			"id": "101",
+			"class_type": "CLIPLoader",
+			"title": "Load CLIP",
+			"pos_x": -1100,
+			"pos_y": 360,
+			"widgets":
+			{
+				"clip_name": "qwen_3_4b.safetensors",
+				"type": "lumina2",
+				"device": "default"
+			},
+			"widget_order": [
+				"clip_name",
+				"type",
+				"device"
+			],
+			"input_pins": [],
+			"output_pins": [
+				{
+					"name": "CLIP",
+					"type": "CLIP"
+				}
+			]
+		},
+		{
+			"id": "102",
+			"class_type": "VAELoader",
+			"title": "Load VAE",
+			"pos_x": -200,
+			"pos_y": 600,
+			"widgets":
+			{
+				"vae_name": "ae.safetensors"
+			},
+			"widget_order": [
+				"vae_name"
+			],
+			"input_pins": [],
+			"output_pins": [
+				{
+					"name": "VAE",
+					"type": "VAE"
+				}
+			]
+		},
+		{
+			"id": "103",
+			"class_type": "CLIPTextEncode",
+			"title": "CLIP Text Encode (Prompt)",
+			"pos_x": -820,
+			"pos_y": 420,
+			"widgets":
+			{
+				"text": "Rubber Ducky Race Car In comic book style"
+			},
+			"widget_order": [
+				"text"
+			],
+			"input_pins": [
+				{
+					"name": "clip",
+					"type": "CLIP"
+				}
+			],
+			"output_pins": [
+				{
+					"name": "CONDITIONING",
+					"type": "CONDITIONING"
+				}
+			]
+		},
+		{
+			"id": "104",
+			"class_type": "ModelSamplingAuraFlow",
+			"title": "ModelSamplingAuraFlow",
+			"pos_x": -540,
+			"pos_y": 140,
+			"widgets":
+			{
+				"shift": "3.0"
+			},
+			"widget_order": [
+				"shift"
+			],
+			"input_pins": [
+				{
+					"name": "model",
+					"type": "MODEL"
+				}
+			],
+			"output_pins": [
+				{
+					"name": "MODEL",
+					"type": "MODEL"
+				}
+			]
+		},
+		{
+			"id": "105",
+			"class_type": "EmptySD3LatentImage",
+			"title": "EmptySD3LatentImage",
+			"pos_x": -800,
+			"pos_y": 240,
+			"widgets":
+			{
+				"width": "1024",
+				"height": "1024",
+				"batch_size": "1"
+			},
+			"widget_order": [
+				"width",
+				"height",
+				"batch_size"
+			],
+			"input_pins": [],
+			"output_pins": [
+				{
+					"name": "LATENT",
+					"type": "LATENT"
+				}
+			]
+		},
+		{
+			"id": "106",
+			"class_type": "KSamplerAdvanced",
+			"title": "KSampler (Advanced)",
+			"pos_x": -240,
+			"pos_y": 240,
+			"widgets":
+			{
+				"add_noise": "enable",
+				"noise_seed": "0",
+				"steps": "8",
+				"cfg": "1.0",
+				"sampler_name": "euler",
+				"scheduler": "simple",
+				"start_at_step": "0",
+				"end_at_step": "10000",
+				"return_with_leftover_noise": "disable"
+			},
+			"widget_order": [
+				"add_noise",
+				"noise_seed",
+				"steps",
+				"cfg",
+				"sampler_name",
+				"scheduler",
+				"start_at_step",
+				"end_at_step",
+				"return_with_leftover_noise"
+			],
+			"input_pins": [
+				{
+					"name": "model",
+					"type": "MODEL"
+				},
+				{
+					"name": "positive",
+					"type": "CONDITIONING"
+				},
+				{
+					"name": "negative",
+					"type": "CONDITIONING"
+				},
+				{
+					"name": "latent_image",
+					"type": "LATENT"
+				}
+			],
+			"output_pins": [
+				{
+					"name": "LATENT",
+					"type": "LATENT"
+				}
+			]
+		},
+		{
+			"id": "109",
+			"class_type": "VAEDecode",
+			"title": "VAE Decode",
+			"pos_x": 80,
+			"pos_y": 560,
+			"widgets":
+			{
+			},
+			"widget_order": [],
+			"input_pins": [
+				{
+					"name": "samples",
+					"type": "LATENT"
+				},
+				{
+					"name": "vae",
+					"type": "VAE"
+				}
+			],
+			"output_pins": [
+				{
+					"name": "IMAGE",
+					"type": "IMAGE"
+				}
+			]
+		},
+		{
+			"id": "110",
+			"class_type": "SaveImage",
+			"title": "Save Image",
+			"pos_x": 349.20772648566026,
+			"pos_y": 574.48562736286908,
+			"widgets":
+			{
+				"filename_prefix": "ComfyUI"
+			},
+			"widget_order": [
+				"filename_prefix"
+			],
+			"input_pins": [
+				{
+					"name": "images",
+					"type": "IMAGE"
+				}
+			],
+			"output_pins": []
+		},
+		{
+			"id": "111",
+			"class_type": "ConditioningZeroOut",
+			"title": "ConditioningZeroOut",
+			"pos_x": -540,
+			"pos_y": 460,
+			"widgets":
+			{
+			},
+			"widget_order": [],
+			"input_pins": [
+				{
+					"name": "conditioning",
+					"type": "CONDITIONING"
+				}
+			],
+			"output_pins": [
+				{
+					"name": "CONDITIONING",
+					"type": "CONDITIONING"
+				}
+			]
+		},
+		{
+			"id": "112",
+			"class_type": "__Reroute__",
+			"title": "",
+			"pos_x": -480,
+			"pos_y": 300,
+			"widgets":
+			{
+			},
+			"widget_order": [],
+			"input_pins": [
+				{
+					"name": "in",
+					"type": "CONDITIONING"
+				}
+			],
+			"output_pins": [
+				{
+					"name": "out",
+					"type": "CONDITIONING"
+				}
+			]
+		},
+		{
+			"id": "113",
+			"class_type": "__UE_DepthMap__",
+			"title": "UE Depth Map",
+			"pos_x": -1220,
+			"pos_y": 140,
+			"widgets":
+			{
+				"max_depth": "50000"
+			},
+			"widget_order": [
+				"max_depth"
+			],
+			"input_pins": [],
+			"output_pins": [
+				{
+					"name": "IMAGE",
+					"type": "IMAGE"
+				}
+			]
+		},
+		{
+			"id": "115",
+			"class_type": "__UE_CameraData__",
+			"title": "UE Camera Data",
+			"pos_x": -1440,
+			"pos_y": 140,
+			"widgets":
+			{
+				"active": "true",
+				"format": "Natural Language",
+				"position": "prepend",
+				"target": "positive only"
+			},
+			"widget_order": [
+				"active",
+				"format",
+				"position",
+				"target"
+			],
+			"input_pins": [],
+			"output_pins": []
+		}
+	],
+	"connections": [
+		{
+			"source_node": "106",
+			"source_output": 0,
+			"target_node": "109",
+			"target_input": "samples"
+		},
+		{
+			"source_node": "102",
+			"source_output": 0,
+			"target_node": "109",
+			"target_input": "vae"
+		},
+		{
+			"source_node": "109",
+			"source_output": 0,
+			"target_node": "110",
+			"target_input": "images"
+		},
+		{
+			"source_node": "104",
+			"source_output": 0,
+			"target_node": "106",
+			"target_input": "model"
+		},
+		{
+			"source_node": "100",
+			"source_output": 0,
+			"target_node": "104",
+			"target_input": "model"
+		},
+		{
+			"source_node": "105",
+			"source_output": 0,
+			"target_node": "106",
+			"target_input": "latent_image"
+		},
+		{
+			"source_node": "103",
+			"source_output": 0,
+			"target_node": "111",
+			"target_input": "conditioning"
+		},
+		{
+			"source_node": "111",
+			"source_output": 0,
+			"target_node": "106",
+			"target_input": "negative"
+		},
+		{
+			"source_node": "103",
+			"source_output": 0,
+			"target_node": "112",
+			"target_input": "in"
+		},
+		{
+			"source_node": "112",
+			"source_output": 0,
+			"target_node": "106",
+			"target_input": "positive"
+		},
+		{
+			"source_node": "101",
+			"source_output": 0,
+			"target_node": "103",
+			"target_input": "clip"
+		}
+	]
+}
