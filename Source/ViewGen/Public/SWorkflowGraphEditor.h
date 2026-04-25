@@ -87,6 +87,26 @@ static const FString UESegmentationMarker = TEXT("__UE_SEGMENTATION_IMAGE__");
 /** Per-node marker prefix for UE Video to Image nodes. Full marker: prefix + nodeId */
 static const FString UEVideoFrameMarkerPrefix = TEXT("__UE_VIDEO_FRAME__");
 
+/** A visual comment group box that wraps nodes */
+struct FGraphGroup
+{
+	/** Unique ID */
+	FString Id;
+
+	/** User-editable title displayed at the top of the group */
+	FString Title;
+
+	/** Position and size in graph space */
+	FVector2D Position = FVector2D::ZeroVector;
+	FVector2D Size = FVector2D(400.0f, 300.0f);
+
+	/** Header/border colour */
+	FLinearColor Color = FLinearColor(0.2f, 0.4f, 0.7f, 0.4f);
+
+	/** Whether this group is currently selected */
+	bool bSelected = false;
+};
+
 /** A single node instance in the graph editor */
 struct FGraphNode
 {
@@ -360,6 +380,12 @@ public:
 	/** Auto-layout the current graph (topological left-to-right) */
 	void AutoLayout();
 
+	/** Frame all nodes in view — adjusts zoom and offset to fit every node on screen */
+	void FrameAllNodes();
+
+	/** Create a comment group box around the currently selected nodes */
+	void CreateGroupFromSelection();
+
 	/** Insert a reroute node into the connection at the given graph position */
 	FString InsertRerouteNode(int32 ConnectionIndex, FVector2D GraphPosition);
 
@@ -383,6 +409,8 @@ private:
 	FString OverlayText;
 
 	// ---- Graph Data ----
+	TArray<FGraphGroup> Groups;
+	int32 NextAutoGroupId = 1;
 	TArray<FGraphNode> Nodes;
 	TMap<FString, int32> NodeIndexMap;  // Id -> index in Nodes
 	TArray<FGraphConnection> Connections;
@@ -434,8 +462,16 @@ private:
 		Panning,
 		DraggingNode,
 		DraggingConnection,
-		BoxSelecting
+		BoxSelecting,
+		DraggingGroup,
+		ResizingGroup
 	};
+
+	// Group interaction
+	int32 DraggedGroupIndex = -1;
+	FVector2D GroupDragOffset = FVector2D::ZeroVector;
+	/** Which edge/corner is being resized: 0=none, 1=right, 2=bottom, 3=bottom-right */
+	int32 GroupResizeEdge = 0;
 
 	EInteractionMode InteractionMode = EInteractionMode::None;
 

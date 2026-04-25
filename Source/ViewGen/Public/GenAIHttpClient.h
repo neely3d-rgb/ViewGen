@@ -431,6 +431,7 @@ private:
 	// ---- State ----
 	FString CurrentPromptId;
 	TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> CurrentRequest;
+	TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> ModelFetchRequest;
 	bool bRequestInProgress = false;
 
 	/** Unique client ID for this session */

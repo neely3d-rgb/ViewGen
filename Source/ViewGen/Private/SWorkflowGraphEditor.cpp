@@ -217,9 +217,11 @@ void SWorkflowGraphEditor::ClearGraph()
 	Nodes.Empty();
 	NodeIndexMap.Empty();
 	Connections.Empty();
+	Groups.Empty();
 	SelectedNodeIds.Empty();
 	NotifySelectionChanged();
 	NextAutoNodeId = 100;
+	NextAutoGroupId = 1;
 	CurrentFilePath.Empty();
 	bGraphDirty = false;
 }
@@ -1362,6 +1364,85 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 
 	OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry));
 
+	// Draw group boxes (behind everything else)
+	{
+		const FSlateBrush* WhiteBox = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+		const float GroupHeaderH = 24.0f * ZoomLevel;
+
+		for (const FGraphGroup& Group : Groups)
+		{
+			FVector2D GPos = GraphToLocal(Group.Position);
+			FVector2D GSize = Group.Size * ZoomLevel;
+
+			// Group body fill (very transparent)
+			FLinearColor BodyColor = Group.Color;
+			BodyColor.A = 0.08f;
+			FSlateDrawElement::MakeBox(
+				OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(GSize, FSlateLayoutTransform(GPos)),
+				WhiteBox, ESlateDrawEffect::None,
+				BodyColor
+			);
+
+			// Header bar
+			FLinearColor HeaderColor = Group.Color;
+			HeaderColor.A = 0.35f;
+			FSlateDrawElement::MakeBox(
+				OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(FVector2D(GSize.X, GroupHeaderH), FSlateLayoutTransform(GPos)),
+				WhiteBox, ESlateDrawEffect::None,
+				HeaderColor
+			);
+
+			// Border
+			FLinearColor BorderColor = Group.Color;
+			BorderColor.A = Group.bSelected ? 0.8f : 0.3f;
+			float Bw = Group.bSelected ? 2.0f : 1.0f;
+			// Top
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(FVector2D(GSize.X, Bw), FSlateLayoutTransform(GPos)),
+				WhiteBox, ESlateDrawEffect::None, BorderColor);
+			// Bottom
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(FVector2D(GSize.X, Bw), FSlateLayoutTransform(FVector2D(GPos.X, GPos.Y + GSize.Y - Bw))),
+				WhiteBox, ESlateDrawEffect::None, BorderColor);
+			// Left
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(FVector2D(Bw, GSize.Y), FSlateLayoutTransform(GPos)),
+				WhiteBox, ESlateDrawEffect::None, BorderColor);
+			// Right
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(FVector2D(Bw, GSize.Y), FSlateLayoutTransform(FVector2D(GPos.X + GSize.X - Bw, GPos.Y))),
+				WhiteBox, ESlateDrawEffect::None, BorderColor);
+
+			// Title text
+			if (ZoomLevel > 0.25f && !Group.Title.IsEmpty())
+			{
+				const FSlateFontInfo GroupFont = FCoreStyle::GetDefaultFontStyle("Bold", static_cast<int32>(FMath::Max(7.0f, 10.0f * ZoomLevel)));
+				FSlateDrawElement::MakeText(
+					OutDrawElements, LayerId + 1,
+					AllottedGeometry.ToPaintGeometry(FVector2D(GSize.X - 8.0f, GroupHeaderH), FSlateLayoutTransform(GPos + FVector2D(6.0f, 3.0f * ZoomLevel))),
+					Group.Title,
+					GroupFont,
+					ESlateDrawEffect::None,
+					FLinearColor::White
+				);
+			}
+
+			// Resize handle indicator (bottom-right corner)
+			if (ZoomLevel > 0.3f)
+			{
+				float HandleSize = 8.0f * ZoomLevel;
+				FVector2D HandlePos(GPos.X + GSize.X - HandleSize, GPos.Y + GSize.Y - HandleSize);
+				FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+					AllottedGeometry.ToPaintGeometry(FVector2D(HandleSize, HandleSize), FSlateLayoutTransform(HandlePos)),
+					WhiteBox, ESlateDrawEffect::None,
+					FLinearColor(BorderColor.R, BorderColor.G, BorderColor.B, 0.5f));
+			}
+		}
+	}
+	LayerId++;
+
 	// Draw connections
 	for (int32 ConnIdx = 0; ConnIdx < Connections.Num(); ++ConnIdx)
 	{
@@ -2113,7 +2194,47 @@ FReply SWorkflowGraphEditor::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 		}
 		else
 		{
+			// Check if clicking on a group (header = drag, bottom-right corner = resize)
+			for (int32 gi = Groups.Num() - 1; gi >= 0; --gi)
+			{
+				FVector2D GPos = GraphToLocal(Groups[gi].Position);
+				FVector2D GSize = Groups[gi].Size * ZoomLevel;
+				float GHeaderH = 24.0f * ZoomLevel;
+				float HandleSize = 12.0f * ZoomLevel;
+
+				// Resize handle (bottom-right corner)
+				FVector2D HandleMin(GPos.X + GSize.X - HandleSize, GPos.Y + GSize.Y - HandleSize);
+				if (LocalPos.X >= HandleMin.X && LocalPos.X <= GPos.X + GSize.X &&
+					LocalPos.Y >= HandleMin.Y && LocalPos.Y <= GPos.Y + GSize.Y)
+				{
+					PushUndoSnapshot();
+					DraggedGroupIndex = gi;
+					GroupResizeEdge = 3; // bottom-right
+					InteractionMode = EInteractionMode::ResizingGroup;
+					LastMousePos = MouseEvent.GetScreenSpacePosition();
+					return FReply::Handled().CaptureMouse(SharedThis(this));
+				}
+
+				// Header drag
+				if (LocalPos.X >= GPos.X && LocalPos.X <= GPos.X + GSize.X &&
+					LocalPos.Y >= GPos.Y && LocalPos.Y <= GPos.Y + GHeaderH)
+				{
+					PushUndoSnapshot();
+					DraggedGroupIndex = gi;
+					GroupDragOffset = LocalToGraph(LocalPos) - Groups[gi].Position;
+					InteractionMode = EInteractionMode::DraggingGroup;
+
+					// Select/deselect the group
+					for (FGraphGroup& G : Groups) G.bSelected = false;
+					Groups[gi].bSelected = true;
+
+					return FReply::Handled().CaptureMouse(SharedThis(this));
+				}
+			}
+
 			// Click on empty space — start box select or clear selection
+			// Also deselect any groups
+			for (FGraphGroup& G : Groups) G.bSelected = false;
 			if (!MouseEvent.IsShiftDown())
 			{
 				SelectedNodeIds.Empty();
@@ -2304,6 +2425,23 @@ FReply SWorkflowGraphEditor::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 					}))
 				);
 
+				// Create Group from Selection (only if multiple nodes selected)
+				if (SelectedNodeIds.Num() >= 1)
+				{
+					MenuBuilder.AddMenuEntry(
+						FText::FromString(SelectedNodeIds.Num() > 1
+							? TEXT("Create Group from Selection")
+							: TEXT("Create Group")),
+						FText::GetEmpty(),
+						FSlateIcon(),
+						FUIAction(FExecuteAction::CreateLambda([this]()
+						{
+							PushUndoSnapshot();
+							CreateGroupFromSelection();
+						}))
+					);
+				}
+
 				FSlateApplication::Get().PushMenu(
 					SharedThis(this),
 					FWidgetPath(),
@@ -2314,8 +2452,137 @@ FReply SWorkflowGraphEditor::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 			}
 			else
 			{
-				// Empty space — show add node menu
-				ShowAddNodeMenu(MouseEvent.GetScreenSpacePosition(), GraphPos);
+				// Check if right-clicking on a group
+				int32 HitGroupIdx = -1;
+				for (int32 i = Groups.Num() - 1; i >= 0; --i)
+				{
+					FVector2D GPos = GraphToLocal(Groups[i].Position);
+					FVector2D GSize = Groups[i].Size * ZoomLevel;
+					float HeaderH = 24.0f * ZoomLevel;
+					if (LocalPos.X >= GPos.X && LocalPos.X <= GPos.X + GSize.X &&
+						LocalPos.Y >= GPos.Y && LocalPos.Y <= GPos.Y + HeaderH)
+					{
+						HitGroupIdx = i;
+						break;
+					}
+				}
+
+				if (HitGroupIdx >= 0)
+				{
+					// Group context menu
+					FMenuBuilder MenuBuilder(true, nullptr);
+
+					MenuBuilder.AddMenuEntry(
+						FText::FromString(TEXT("Rename Group")),
+						FText::FromString(TEXT("Change the group title")),
+						FSlateIcon(),
+						FUIAction(FExecuteAction::CreateLambda([this, HitGroupIdx]()
+						{
+							if (HitGroupIdx >= Groups.Num()) return;
+
+							TSharedRef<SWindow> RenameWindow = SNew(SWindow)
+								.Title(FText::FromString(TEXT("Rename Group")))
+								.ClientSize(FVector2D(300, 80))
+								.IsTopmostWindow(true)
+								.SupportsMinimize(false)
+								.SupportsMaximize(false);
+
+							TSharedPtr<SEditableTextBox> TextBox;
+							int32 GroupIdx = HitGroupIdx;
+
+							RenameWindow->SetContent(
+								SNew(SVerticalBox)
+								+ SVerticalBox::Slot()
+								.AutoHeight()
+								.Padding(8.0f)
+								[
+									SAssignNew(TextBox, SEditableTextBox)
+									.Text(FText::FromString(Groups[GroupIdx].Title))
+									.SelectAllTextWhenFocused(true)
+									.OnTextCommitted_Lambda([this, GroupIdx, RenameWindow](const FText& NewText, ETextCommit::Type CommitType)
+									{
+										if (CommitType != ETextCommit::OnCleared && GroupIdx < Groups.Num())
+										{
+											PushUndoSnapshot();
+											Groups[GroupIdx].Title = NewText.ToString();
+											NotifyGraphChanged();
+										}
+										FSlateApplication::Get().RequestDestroyWindow(RenameWindow);
+									})
+								]
+							);
+
+							FSlateApplication::Get().AddWindow(RenameWindow);
+							if (TextBox.IsValid())
+							{
+								FSlateApplication::Get().SetKeyboardFocus(TextBox, EFocusCause::SetDirectly);
+							}
+						}))
+					);
+
+					MenuBuilder.AddMenuEntry(
+						FText::FromString(TEXT("Delete Group")),
+						FText::FromString(TEXT("Remove the group box (keeps nodes)")),
+						FSlateIcon(),
+						FUIAction(FExecuteAction::CreateLambda([this, HitGroupIdx]()
+						{
+							PushUndoSnapshot();
+							if (HitGroupIdx < Groups.Num())
+							{
+								Groups.RemoveAt(HitGroupIdx);
+								NotifyGraphChanged();
+							}
+						}))
+					);
+
+					// Color submenu
+					MenuBuilder.AddSubMenu(
+						FText::FromString(TEXT("Color")),
+						FText::GetEmpty(),
+						FNewMenuDelegate::CreateLambda([this, HitGroupIdx](FMenuBuilder& SubMenu)
+						{
+							struct FColorOption { FString Name; FLinearColor Color; };
+							TArray<FColorOption> Colors = {
+								{TEXT("Blue"), FLinearColor(0.2f, 0.4f, 0.7f, 0.4f)},
+								{TEXT("Green"), FLinearColor(0.2f, 0.6f, 0.3f, 0.4f)},
+								{TEXT("Red"), FLinearColor(0.7f, 0.2f, 0.2f, 0.4f)},
+								{TEXT("Purple"), FLinearColor(0.5f, 0.2f, 0.7f, 0.4f)},
+								{TEXT("Orange"), FLinearColor(0.8f, 0.5f, 0.1f, 0.4f)},
+								{TEXT("Teal"), FLinearColor(0.1f, 0.6f, 0.6f, 0.4f)},
+								{TEXT("Yellow"), FLinearColor(0.7f, 0.7f, 0.1f, 0.4f)},
+								{TEXT("Gray"), FLinearColor(0.4f, 0.4f, 0.4f, 0.4f)}
+							};
+							for (const FColorOption& C : Colors)
+							{
+								SubMenu.AddMenuEntry(
+									FText::FromString(C.Name), FText::GetEmpty(), FSlateIcon(),
+									FUIAction(FExecuteAction::CreateLambda([this, HitGroupIdx, Color = C.Color]()
+									{
+										if (HitGroupIdx < Groups.Num())
+										{
+											PushUndoSnapshot();
+											Groups[HitGroupIdx].Color = Color;
+											NotifyGraphChanged();
+										}
+									}))
+								);
+							}
+						})
+					);
+
+					FSlateApplication::Get().PushMenu(
+						SharedThis(this),
+						FWidgetPath(),
+						MenuBuilder.MakeWidget(),
+						MouseEvent.GetScreenSpacePosition(),
+						FPopupTransitionEffect::ContextMenu
+					);
+				}
+				else
+				{
+					// Empty space — show add node menu
+					ShowAddNodeMenu(MouseEvent.GetScreenSpacePosition(), GraphPos);
+				}
 			}
 		}
 	}
@@ -2404,6 +2671,49 @@ FReply SWorkflowGraphEditor::OnMouseMove(const FGeometry& MyGeometry, const FPoi
 		return FReply::Handled();
 	}
 
+	case EInteractionMode::DraggingGroup:
+	{
+		if (DraggedGroupIndex >= 0 && DraggedGroupIndex < Groups.Num())
+		{
+			FVector2D GraphPos = LocalToGraph(LocalPos) - GroupDragOffset;
+			GraphPos.X = FMath::RoundToFloat(GraphPos.X / GraphConstants::GridSize) * GraphConstants::GridSize;
+			GraphPos.Y = FMath::RoundToFloat(GraphPos.Y / GraphConstants::GridSize) * GraphConstants::GridSize;
+
+			FVector2D Delta = GraphPos - Groups[DraggedGroupIndex].Position;
+			Groups[DraggedGroupIndex].Position = GraphPos;
+
+			// Move all nodes inside the group along with it
+			for (FGraphNode& Node : Nodes)
+			{
+				if (Node.Position.X >= Groups[DraggedGroupIndex].Position.X - Delta.X &&
+					Node.Position.Y >= Groups[DraggedGroupIndex].Position.Y - Delta.Y &&
+					Node.Position.X + Node.Size.X <= Groups[DraggedGroupIndex].Position.X - Delta.X + Groups[DraggedGroupIndex].Size.X &&
+					Node.Position.Y + Node.Size.Y <= Groups[DraggedGroupIndex].Position.Y - Delta.Y + Groups[DraggedGroupIndex].Size.Y)
+				{
+					Node.Position += Delta;
+				}
+			}
+		}
+		return FReply::Handled();
+	}
+
+	case EInteractionMode::ResizingGroup:
+	{
+		if (DraggedGroupIndex >= 0 && DraggedGroupIndex < Groups.Num())
+		{
+			FVector2D GraphPos = LocalToGraph(LocalPos);
+			FGraphGroup& G = Groups[DraggedGroupIndex];
+
+			float MinSize = 100.0f;
+			float NewW = FMath::Max(MinSize, GraphPos.X - G.Position.X);
+			float NewH = FMath::Max(MinSize, GraphPos.Y - G.Position.Y);
+			NewW = FMath::RoundToFloat(NewW / GraphConstants::GridSize) * GraphConstants::GridSize;
+			NewH = FMath::RoundToFloat(NewH / GraphConstants::GridSize) * GraphConstants::GridSize;
+			G.Size = FVector2D(NewW, NewH);
+		}
+		return FReply::Handled();
+	}
+
 	default:
 	{
 		// Update connection hover highlight when idle
@@ -2486,6 +2796,75 @@ FReply SWorkflowGraphEditor::OnMouseButtonDoubleClick(const FGeometry& MyGeometr
 		SelectedNodeIds.Add(HitNodeId);
 			NotifySelectionChanged();
 		return FReply::Handled();
+	}
+
+	// Double-click on a group header — rename
+	for (int32 gi = Groups.Num() - 1; gi >= 0; --gi)
+	{
+		FVector2D GPos = GraphToLocal(Groups[gi].Position);
+		FVector2D GSize = Groups[gi].Size * ZoomLevel;
+		float GHeaderH = 24.0f * ZoomLevel;
+
+		if (LocalPos.X >= GPos.X && LocalPos.X <= GPos.X + GSize.X &&
+			LocalPos.Y >= GPos.Y && LocalPos.Y <= GPos.Y + GHeaderH)
+		{
+			// Show a rename dialog
+			TSharedRef<SWindow> RenameWindow = SNew(SWindow)
+				.Title(FText::FromString(TEXT("Rename Group")))
+				.ClientSize(FVector2D(300, 80))
+				.IsTopmostWindow(true)
+				.SupportsMinimize(false)
+				.SupportsMaximize(false);
+
+			TSharedPtr<SEditableTextBox> TextBox;
+			int32 GroupIdx = gi;
+
+			RenameWindow->SetContent(
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(8.0f)
+				[
+					SAssignNew(TextBox, SEditableTextBox)
+					.Text(FText::FromString(Groups[gi].Title))
+					.SelectAllTextWhenFocused(true)
+					.OnTextCommitted_Lambda([this, GroupIdx, RenameWindow](const FText& NewText, ETextCommit::Type CommitType)
+					{
+						if (CommitType != ETextCommit::OnCleared && GroupIdx < Groups.Num())
+						{
+							PushUndoSnapshot();
+							Groups[GroupIdx].Title = NewText.ToString();
+							NotifyGraphChanged();
+						}
+						FSlateApplication::Get().RequestDestroyWindow(RenameWindow);
+					})
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Right)
+				.Padding(8.0f, 0.0f, 8.0f, 8.0f)
+				[
+					SNew(SButton)
+					.Text(FText::FromString(TEXT("OK")))
+					.OnClicked_Lambda([TextBox, RenameWindow]() -> FReply
+					{
+						if (TextBox.IsValid())
+						{
+							TextBox->SetText(TextBox->GetText()); // Force commit
+							// The OnTextCommitted handler will close the window
+						}
+						return FReply::Handled();
+					})
+				]
+			);
+
+			FSlateApplication::Get().AddWindow(RenameWindow);
+			if (TextBox.IsValid())
+			{
+				FSlateApplication::Get().SetKeyboardFocus(TextBox, EFocusCause::SetDirectly);
+			}
+			return FReply::Handled();
+		}
 	}
 
 	// Double-click on a connection curve — insert a reroute node
@@ -2584,6 +2963,13 @@ FReply SWorkflowGraphEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEv
 		// Auto-layout
 		PushUndoSnapshot();
 		AutoLayout();
+		return FReply::Handled();
+	}
+
+	if (InKeyEvent.GetKey() == EKeys::F)
+	{
+		// Frame all nodes in view
+		FrameAllNodes();
 		return FReply::Handled();
 	}
 
@@ -4529,7 +4915,7 @@ static TSharedPtr<FJsonObject> ConvertWebUIToAPIFormat(TSharedPtr<FJsonObject> R
 
 		// Widget values: these are positional, matching the node's input order.
 		// We'll store them as-is and let the existing import logic match them.
-		const TArray<TSharedPtr<FJsonValue>>* WidgetVals;
+		const TArray<TSharedPtr<FJsonValue>>* WidgetVals = nullptr;
 		if (NodeObj->TryGetArrayField(TEXT("widgets_values"), WidgetVals))
 		{
 			// Widget values are positional — we can't reliably map them to input names
@@ -4685,6 +5071,7 @@ void SWorkflowGraphEditor::ImportWorkflowJSON(TSharedPtr<FJsonObject> Workflow)
 
 	// Auto-detect Web UI format and convert if needed
 	TMap<FString, FVector2D> WebUIPositions;
+	TSharedPtr<FJsonObject> OriginalWebUI = Workflow; // Keep reference for group import
 	TSharedPtr<FJsonObject> ConvertedWorkflow = ConvertWebUIToAPIFormat(Workflow, WebUIPositions);
 	bool bHasPositions = WebUIPositions.Num() > 0;
 	if (ConvertedWorkflow.IsValid())
@@ -4895,6 +5282,51 @@ void SWorkflowGraphEditor::ImportWorkflowJSON(TSharedPtr<FJsonObject> Workflow)
 		AutoLayout();
 	}
 
+	// Import ComfyUI groups from the original Web UI JSON
+	if (OriginalWebUI.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* GroupsArray;
+		if (OriginalWebUI->TryGetArrayField(TEXT("groups"), GroupsArray))
+		{
+			for (const TSharedPtr<FJsonValue>& GroupVal : *GroupsArray)
+			{
+				const TSharedPtr<FJsonObject>* GroupObj;
+				if (!GroupVal->TryGetObject(GroupObj)) continue;
+
+				FGraphGroup Group;
+				Group.Id = FString::Printf(TEXT("group_%d"), NextAutoGroupId++);
+
+				FString Title;
+				if ((*GroupObj)->TryGetStringField(TEXT("title"), Title))
+				{
+					Group.Title = Title;
+				}
+
+				// ComfyUI groups use "bounding": [x, y, width, height]
+				const TArray<TSharedPtr<FJsonValue>>* Bounding;
+				if ((*GroupObj)->TryGetArrayField(TEXT("bounding"), Bounding) && Bounding->Num() >= 4)
+				{
+					Group.Position.X = static_cast<float>((*Bounding)[0]->AsNumber());
+					Group.Position.Y = static_cast<float>((*Bounding)[1]->AsNumber());
+					Group.Size.X = static_cast<float>((*Bounding)[2]->AsNumber());
+					Group.Size.Y = static_cast<float>((*Bounding)[3]->AsNumber());
+				}
+
+				// Parse color (ComfyUI uses hex string like "#3f789e")
+				FString ColorStr;
+				if ((*GroupObj)->TryGetStringField(TEXT("color"), ColorStr) && ColorStr.Len() >= 7)
+				{
+					FColor ParsedColor = FColor::FromHex(ColorStr);
+					Group.Color = FLinearColor(ParsedColor);
+					Group.Color.A = 0.4f;
+				}
+
+				Groups.Add(MoveTemp(Group));
+			}
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: Imported %d groups from ComfyUI workflow"), Groups.Num());
+		}
+	}
+
 	NotifyGraphChanged();
 }
 
@@ -4987,6 +5419,25 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::SerializeGraph() const
 		ConnArray.Add(MakeShareable(new FJsonValueObject(ConnObj)));
 	}
 	Root->SetArrayField(TEXT("connections"), ConnArray);
+
+	// Groups
+	TArray<TSharedPtr<FJsonValue>> GroupArray;
+	for (const FGraphGroup& Group : Groups)
+	{
+		TSharedPtr<FJsonObject> GroupObj = MakeShareable(new FJsonObject);
+		GroupObj->SetStringField(TEXT("id"), Group.Id);
+		GroupObj->SetStringField(TEXT("title"), Group.Title);
+		GroupObj->SetNumberField(TEXT("pos_x"), Group.Position.X);
+		GroupObj->SetNumberField(TEXT("pos_y"), Group.Position.Y);
+		GroupObj->SetNumberField(TEXT("size_x"), Group.Size.X);
+		GroupObj->SetNumberField(TEXT("size_y"), Group.Size.Y);
+		GroupObj->SetNumberField(TEXT("color_r"), Group.Color.R);
+		GroupObj->SetNumberField(TEXT("color_g"), Group.Color.G);
+		GroupObj->SetNumberField(TEXT("color_b"), Group.Color.B);
+		GroupObj->SetNumberField(TEXT("color_a"), Group.Color.A);
+		GroupArray.Add(MakeShareable(new FJsonValueObject(GroupObj)));
+	}
+	Root->SetArrayField(TEXT("groups"), GroupArray);
 
 	return Root;
 }
@@ -5213,6 +5664,44 @@ bool SWorkflowGraphEditor::DeserializeGraph(TSharedPtr<FJsonObject> GraphJson)
 		}
 	}
 
+	// Groups
+	const TArray<TSharedPtr<FJsonValue>>* GroupArray;
+	if (GraphJson->TryGetArrayField(TEXT("groups"), GroupArray))
+	{
+		for (const TSharedPtr<FJsonValue>& GroupVal : *GroupArray)
+		{
+			const TSharedPtr<FJsonObject>* GroupObj;
+			if (!GroupVal->TryGetObject(GroupObj)) continue;
+
+			FGraphGroup Group;
+			(*GroupObj)->TryGetStringField(TEXT("id"), Group.Id);
+			(*GroupObj)->TryGetStringField(TEXT("title"), Group.Title);
+			Group.Position.X = (*GroupObj)->GetNumberField(TEXT("pos_x"));
+			Group.Position.Y = (*GroupObj)->GetNumberField(TEXT("pos_y"));
+			Group.Size.X = (*GroupObj)->GetNumberField(TEXT("size_x"));
+			Group.Size.Y = (*GroupObj)->GetNumberField(TEXT("size_y"));
+
+			double R, G, B, A;
+			if ((*GroupObj)->TryGetNumberField(TEXT("color_r"), R) &&
+				(*GroupObj)->TryGetNumberField(TEXT("color_g"), G) &&
+				(*GroupObj)->TryGetNumberField(TEXT("color_b"), B) &&
+				(*GroupObj)->TryGetNumberField(TEXT("color_a"), A))
+			{
+				Group.Color = FLinearColor(R, G, B, A);
+			}
+
+			// Track group IDs
+			int32 IdNum;
+			FString IdNumStr = Group.Id.Replace(TEXT("group_"), TEXT(""));
+			if (FDefaultValueHelper::ParseInt(IdNumStr, IdNum))
+			{
+				NextAutoGroupId = FMath::Max(NextAutoGroupId, IdNum + 1);
+			}
+
+			Groups.Add(MoveTemp(Group));
+		}
+	}
+
 	bGraphDirty = false;
 	NotifyGraphChanged();
 	// Reset dirty flag since we just loaded — NotifyGraphChanged sets it
@@ -5347,8 +5836,97 @@ void SWorkflowGraphEditor::AutoLayout()
 		}
 	}
 
-	// Center the view
-	ViewOffset = FVector2D(100.0f, 200.0f);
+	// Frame all nodes in view
+	FrameAllNodes();
+}
+
+// ============================================================================
+// Comment Groups
+// ============================================================================
+
+void SWorkflowGraphEditor::CreateGroupFromSelection()
+{
+	if (SelectedNodeIds.Num() == 0) return;
+
+	// Compute bounding box of selected nodes
+	FVector2D MinBound(TNumericLimits<float>::Max(), TNumericLimits<float>::Max());
+	FVector2D MaxBound(TNumericLimits<float>::Lowest(), TNumericLimits<float>::Lowest());
+
+	for (const FString& NodeId : SelectedNodeIds)
+	{
+		const int32* IdxPtr = NodeIndexMap.Find(NodeId);
+		if (!IdxPtr) continue;
+		const FGraphNode& Node = Nodes[*IdxPtr];
+		MinBound.X = FMath::Min(MinBound.X, Node.Position.X);
+		MinBound.Y = FMath::Min(MinBound.Y, Node.Position.Y);
+		MaxBound.X = FMath::Max(MaxBound.X, Node.Position.X + Node.Size.X);
+		MaxBound.Y = FMath::Max(MaxBound.Y, Node.Position.Y + Node.Size.Y);
+	}
+
+	// Add padding around the nodes
+	float Padding = 30.0f;
+	float HeaderH = 30.0f; // Extra space for group title
+
+	FGraphGroup NewGroup;
+	NewGroup.Id = FString::Printf(TEXT("group_%d"), NextAutoGroupId++);
+	NewGroup.Title = TEXT("Group");
+	NewGroup.Position = FVector2D(MinBound.X - Padding, MinBound.Y - Padding - HeaderH);
+	NewGroup.Size = (MaxBound - MinBound) + FVector2D(Padding * 2.0f, Padding * 2.0f + HeaderH);
+	NewGroup.Color = FLinearColor(0.2f, 0.4f, 0.7f, 0.4f);
+
+	Groups.Add(MoveTemp(NewGroup));
+	NotifyGraphChanged();
+}
+
+void SWorkflowGraphEditor::FrameAllNodes()
+{
+	if (Nodes.Num() == 0)
+	{
+		ViewOffset = FVector2D::ZeroVector;
+		ZoomLevel = 1.0f;
+		return;
+	}
+
+	// Compute bounding box of all nodes in graph space
+	FVector2D MinBound(TNumericLimits<float>::Max(), TNumericLimits<float>::Max());
+	FVector2D MaxBound(TNumericLimits<float>::Lowest(), TNumericLimits<float>::Lowest());
+
+	for (const FGraphNode& Node : Nodes)
+	{
+		MinBound.X = FMath::Min(MinBound.X, Node.Position.X);
+		MinBound.Y = FMath::Min(MinBound.Y, Node.Position.Y);
+		MaxBound.X = FMath::Max(MaxBound.X, Node.Position.X + Node.Size.X);
+		MaxBound.Y = FMath::Max(MaxBound.Y, Node.Position.Y + Node.Size.Y);
+	}
+
+	FVector2D GraphSize = MaxBound - MinBound;
+	FVector2D GraphCenter = (MinBound + MaxBound) * 0.5f;
+
+	// Get the available screen size (approximate — use cached geometry if available)
+	FVector2D ViewSize = GetCachedGeometry().GetLocalSize();
+	if (ViewSize.X < 100.0f || ViewSize.Y < 100.0f)
+	{
+		ViewSize = FVector2D(800.0f, 500.0f); // Fallback
+	}
+
+	// Add padding
+	float Padding = 60.0f;
+	FVector2D AvailSize = ViewSize - FVector2D(Padding * 2.0f, Padding * 2.0f);
+
+	// Calculate zoom to fit
+	if (GraphSize.X > 0.0f && GraphSize.Y > 0.0f)
+	{
+		float ZoomX = AvailSize.X / GraphSize.X;
+		float ZoomY = AvailSize.Y / GraphSize.Y;
+		ZoomLevel = FMath::Clamp(FMath::Min(ZoomX, ZoomY), 0.1f, 2.0f);
+	}
+	else
+	{
+		ZoomLevel = 1.0f;
+	}
+
+	// Center the view: ViewOffset = -(GraphCenter * ZoomLevel) + ViewSize/2
+	ViewOffset = -(GraphCenter * ZoomLevel) + ViewSize * 0.5f;
 }
 
 // ============================================================================

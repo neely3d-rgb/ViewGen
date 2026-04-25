@@ -29,6 +29,13 @@ FGenAIHttpClient::FGenAIHttpClient()
 FGenAIHttpClient::~FGenAIHttpClient()
 {
 	CancelRequest();
+
+	// Cancel any pending model fetch request
+	if (ModelFetchRequest.IsValid())
+	{
+		ModelFetchRequest->CancelRequest();
+		ModelFetchRequest.Reset();
+	}
 }
 
 // ============================================================================
@@ -44,7 +51,14 @@ void FGenAIHttpClient::FetchAvailableModels()
 	// We'll fetch all three node infos from a single endpoint: /object_info
 	FString URL = FString::Printf(TEXT("%s/object_info"), *Settings->APIEndpointURL);
 
+	// Cancel any previous model fetch
+	if (ModelFetchRequest.IsValid())
+	{
+		ModelFetchRequest->CancelRequest();
+	}
+
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+	ModelFetchRequest = Request;
 	Request->SetURL(URL);
 	Request->SetVerb(TEXT("GET"));
 	Request->SetTimeout(60.0f); // /object_info can be very large with many custom nodes
