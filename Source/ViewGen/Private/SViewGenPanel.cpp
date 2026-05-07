@@ -2027,6 +2027,18 @@ TSharedPtr<FString> SViewGenPanel::FindOrAddOption(TArray<TSharedPtr<FString>>& 
 	return NewOpt;
 }
 
+TSharedPtr<FString> SViewGenPanel::FindMatchingOption(const TArray<TSharedPtr<FString>>& Options, const FString& Value)
+{
+	for (const auto& Opt : Options)
+	{
+		if (*Opt == Value)
+		{
+			return Opt;
+		}
+	}
+	return nullptr;
+}
+
 void SViewGenPanel::FetchAndPopulateModels()
 {
 	if (!HttpClient.IsValid()) return;
@@ -2106,7 +2118,19 @@ void SViewGenPanel::FilterModelsForCurrentMode()
 			CheckpointOptions.Add(MakeShareable(new FString(Name)));
 		}
 	}
-	SelectedCheckpoint = FindOrAddOption(CheckpointOptions, Settings->CheckpointName);
+	// If the saved checkpoint exists in the filtered list, select it.
+	// Otherwise auto-select the first available model so generation works out of the box.
+	SelectedCheckpoint = FindMatchingOption(CheckpointOptions, Settings->CheckpointName);
+	if (!SelectedCheckpoint.IsValid() && CheckpointOptions.Num() > 0)
+	{
+		SelectedCheckpoint = CheckpointOptions[0];
+		UGenAISettings::Get()->CheckpointName = *SelectedCheckpoint;
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Default checkpoint not found — auto-selected '%s'"), **SelectedCheckpoint);
+	}
+	else if (!SelectedCheckpoint.IsValid())
+	{
+		SelectedCheckpoint = FindOrAddOption(CheckpointOptions, Settings->CheckpointName);
+	}
 	if (CheckpointCombo.IsValid())
 	{
 		CheckpointCombo->RefreshOptions();
@@ -2119,7 +2143,18 @@ void SViewGenPanel::FilterModelsForCurrentMode()
 	{
 		UNETModelOptions.Add(MakeShareable(new FString(Name)));
 	}
-	SelectedUNETModel = FindOrAddOption(UNETModelOptions, Settings->FluxModelName);
+	// Same auto-select logic for UNET models
+	SelectedUNETModel = FindMatchingOption(UNETModelOptions, Settings->FluxModelName);
+	if (!SelectedUNETModel.IsValid() && UNETModelOptions.Num() > 0)
+	{
+		SelectedUNETModel = UNETModelOptions[0];
+		UGenAISettings::Get()->FluxModelName = *SelectedUNETModel;
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Default UNET model not found — auto-selected '%s'"), **SelectedUNETModel);
+	}
+	else if (!SelectedUNETModel.IsValid())
+	{
+		SelectedUNETModel = FindOrAddOption(UNETModelOptions, Settings->FluxModelName);
+	}
 	if (UNETModelCombo.IsValid())
 	{
 		UNETModelCombo->RefreshOptions();

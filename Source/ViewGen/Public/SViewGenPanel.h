@@ -244,6 +244,9 @@ private:
 	/** Helper to find or add a string option in an options array */
 	TSharedPtr<FString> FindOrAddOption(TArray<TSharedPtr<FString>>& Options, const FString& Value);
 
+	/** Helper to find a matching option without adding if not found (returns nullptr if absent) */
+	TSharedPtr<FString> FindMatchingOption(const TArray<TSharedPtr<FString>>& Options, const FString& Value);
+
 	bool bSettingsExpanded = false;
 	/** Interactive graph editor widget */
 	TSharedPtr<SWorkflowGraphEditor> GraphEditor;
