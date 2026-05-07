@@ -1,7 +1,6 @@
 // Copyright ViewGen. All Rights Reserved.
 
 #include "SViewGenPanel.h"
-#include "SWorkflowPreviewPanel.h"
 #include "SWorkflowGraphEditor.h"
 #include "ViewportCapture.h"
 #include "DepthPassRenderer.h"
@@ -87,6 +86,26 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 		});
 	});
 
+	// Bind error node highlighting
+	HttpClient->OnNodeError.BindLambda([this](const FString& NodeId, const FString& ClassType)
+	{
+		AsyncTask(ENamedThreads::GameThread, [this, NodeId, ClassType]()
+		{
+			if (GraphEditor.IsValid())
+			{
+				// Try node ID first, fall back to class_type
+				if (!NodeId.IsEmpty())
+				{
+					GraphEditor->SetErrorNode(NodeId);
+				}
+				else if (!ClassType.IsEmpty())
+				{
+					GraphEditor->SetErrorNode(ClassType);
+				}
+			}
+		});
+	});
+
 	// Bind SAM3 segmentation callback
 	HttpClient->OnSegmentationComplete.BindRaw(this, &SViewGenPanel::OnSAM3SegmentationComplete);
 
@@ -112,6 +131,9 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 	// Initialize model dropdowns with current settings (will be refreshed from ComfyUI)
 	SelectedCheckpoint = MakeShareable(new FString(Settings->CheckpointName));
 	CheckpointOptions.Add(SelectedCheckpoint);
+
+	SelectedUNETModel = MakeShareable(new FString(Settings->FluxModelName));
+	UNETModelOptions.Add(SelectedUNETModel);
 
 	SelectedControlNet = MakeShareable(new FString(Settings->ControlNetModel));
 	ControlNetOptions.Add(SelectedControlNet);
@@ -328,17 +350,6 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 						.Padding(4.0f)
 						[
 							BuildSettingsPanel()
-						]
-
-						+ SScrollBox::Slot()
-						[
-							SNew(SSeparator)
-						]
-
-						+ SScrollBox::Slot()
-						.Padding(4.0f)
-						[
-							BuildWorkflowPreviewSection()
 						]
 
 						+ SScrollBox::Slot()
@@ -1326,6 +1337,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildLoRAPanel()
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("LoRALabel", "LoRA"))
+				.ToolTipText(FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("LoRA")))))
 				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
 			]
 
@@ -1481,6 +1493,12 @@ FReply SViewGenPanel::OnGenerateClicked()
 
 	bIsGenerating = true;
 	CurrentProgress = 0.0f;
+
+	// Clear any previous error highlights before starting a new generation
+	if (GraphEditor.IsValid())
+	{
+		GraphEditor->ClearErrorNodes();
+	}
 
 	FString Prompt = PromptTextBox->GetText().ToString();
 	FString NegativePrompt = NegativePromptTextBox->GetText().ToString();
@@ -1881,6 +1899,32 @@ TSharedRef<SWidget> SViewGenPanel::MakeSettingsRow(const FText& Label, TSharedRe
 		];
 }
 
+TSharedRef<SWidget> SViewGenPanel::MakeSettingsRow(const FText& Label, const FText& LabelTooltip, TSharedRef<SWidget> ValueWidget)
+{
+	return SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+		[
+			SNew(SBox)
+			.WidthOverride(140.0f)
+			[
+				SNew(STextBlock)
+				.Text(Label)
+				.ToolTipText(LabelTooltip)
+			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.VAlign(VAlign_Center)
+		[
+			ValueWidget
+		];
+}
+
 void SViewGenPanel::InitSamplerSchedulerOptions()
 {
 	const UGenAISettings* Settings = UGenAISettings::Get();
@@ -2053,17 +2097,33 @@ void SViewGenPanel::FilterModelsForCurrentMode()
 	const UGenAISettings* Settings = UGenAISettings::Get();
 	const bool bFluxMode = Settings->bUseFluxControlNet;
 
-	// ---- Checkpoints: always show all (user explicitly picks) ----
+	// ---- Checkpoints: filter by architecture (hide Flux UNET-only models in SD mode) ----
 	CheckpointOptions.Empty();
 	for (const FString& Name : AllCheckpoints)
 	{
-		CheckpointOptions.Add(MakeShareable(new FString(Name)));
+		if (IsCompatibleWithMode(Name, bFluxMode))
+		{
+			CheckpointOptions.Add(MakeShareable(new FString(Name)));
+		}
 	}
 	SelectedCheckpoint = FindOrAddOption(CheckpointOptions, Settings->CheckpointName);
 	if (CheckpointCombo.IsValid())
 	{
 		CheckpointCombo->RefreshOptions();
 		CheckpointCombo->SetSelectedItem(SelectedCheckpoint);
+	}
+
+	// ---- UNETs / Diffusion Models: show all (Flux-specific) ----
+	UNETModelOptions.Empty();
+	for (const FString& Name : AllUNETs)
+	{
+		UNETModelOptions.Add(MakeShareable(new FString(Name)));
+	}
+	SelectedUNETModel = FindOrAddOption(UNETModelOptions, Settings->FluxModelName);
+	if (UNETModelCombo.IsValid())
+	{
+		UNETModelCombo->RefreshOptions();
+		UNETModelCombo->SetSelectedItem(SelectedUNETModel);
 	}
 
 	// ---- LoRAs: filter by architecture ----
@@ -2096,18 +2156,19 @@ void SViewGenPanel::FilterModelsForCurrentMode()
 		ControlNetCombo->SetSelectedItem(SelectedControlNet);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("ViewGen: Filtered for %s — showing %d LoRAs, %d ControlNets (from %d / %d total)"),
+	UE_LOG(LogTemp, Log, TEXT("ViewGen: Filtered for %s — showing %d UNETs, %d LoRAs, %d ControlNets (from %d / %d / %d total)"),
 		bFluxMode ? TEXT("Flux") : TEXT("SD"),
-		LoRAModelOptions.Num(), ControlNetOptions.Num(),
-		AllLoRAs.Num(), AllControlNets.Num());
+		UNETModelOptions.Num(), LoRAModelOptions.Num(), ControlNetOptions.Num(),
+		AllUNETs.Num(), AllLoRAs.Num(), AllControlNets.Num());
 }
 
-void SViewGenPanel::OnModelsReceived(const TArray<FString>& Checkpoints, const TArray<FString>& LoRAs, const TArray<FString>& ControlNets, const FGeminiNodeOptions& GeminiOptions, const FKlingNodeOptions& KlingOptions)
+void SViewGenPanel::OnModelsReceived(const TArray<FString>& Checkpoints, const TArray<FString>& LoRAs, const TArray<FString>& ControlNets, const TArray<FString>& UNETs, const FGeminiNodeOptions& GeminiOptions, const FKlingNodeOptions& KlingOptions)
 {
 	// Store raw lists for re-filtering when mode changes
 	AllCheckpoints = Checkpoints;
 	AllLoRAs = LoRAs;
 	AllControlNets = ControlNets;
+	AllUNETs = UNETs;
 
 	// Apply architecture-based filtering
 	FilterModelsForCurrentMode();
@@ -2118,8 +2179,8 @@ void SViewGenPanel::OnModelsReceived(const TArray<FString>& Checkpoints, const T
 	// Populate Kling dropdowns from ComfyUI node info
 	PopulateKlingDropdowns(KlingOptions);
 
-	UE_LOG(LogTemp, Log, TEXT("ViewGen: Model dropdowns updated — %d checkpoints, %d LoRAs, %d ControlNets, %d Gemini models"),
-		AllCheckpoints.Num(), AllLoRAs.Num(), AllControlNets.Num(), GeminiModelOptions.Num());
+	UE_LOG(LogTemp, Log, TEXT("ViewGen: Model dropdowns updated — %d checkpoints, %d UNETs, %d LoRAs, %d ControlNets, %d Gemini models"),
+		AllCheckpoints.Num(), AllUNETs.Num(), AllLoRAs.Num(), AllControlNets.Num(), GeminiModelOptions.Num());
 }
 
 void SViewGenPanel::PopulateGeminiDropdowns(const FGeminiNodeOptions& Options)
@@ -2337,6 +2398,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 			[
 				MakeSettingsRow(
 					LOCTEXT("CheckpointLabel", "Checkpoint"),
+					FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("Checkpoint")))),
 					SAssignNew(CheckpointCombo, SComboBox<TSharedPtr<FString>>)
 					.OptionsSource(&CheckpointOptions)
 					.InitiallySelectedItem(SelectedCheckpoint)
@@ -2573,6 +2635,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 		[
 			MakeSettingsRow(
 				LOCTEXT("SamplerLabel", "Sampler"),
+				LOCTEXT("SamplerTip", "Sampling algorithm used by KSampler (built-in, no model file needed)"),
 				SNew(SComboBox<TSharedPtr<FString>>)
 				.OptionsSource(&SamplerOptions)
 				.InitiallySelectedItem(SelectedSampler)
@@ -2611,6 +2674,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 		[
 			MakeSettingsRow(
 				LOCTEXT("SchedulerLabel", "Scheduler"),
+				LOCTEXT("SchedulerTip", "Noise schedule used by KSampler (built-in, no model file needed)"),
 				SNew(SComboBox<TSharedPtr<FString>>)
 				.OptionsSource(&SchedulerOptions)
 				.InitiallySelectedItem(SelectedScheduler)
@@ -2720,17 +2784,39 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 		.Padding(0.0f, 1.0f)
 		[
 			MakeSettingsRow(
-				LOCTEXT("FluxModelNameLabel", "Flux Model Name"),
-				SAssignNew(FluxModelNameInput, SEditableTextBox)
-				.Text(FText::FromString(Settings->FluxModelName))
-				.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
+				LOCTEXT("UNETModelLabel", "UNET / Diffusion Model"),
+				FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("UNET")))),
+				SAssignNew(UNETModelCombo, SComboBox<TSharedPtr<FString>>)
+				.OptionsSource(&UNETModelOptions)
+				.InitiallySelectedItem(SelectedUNETModel)
+				.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
 				{
-					UGenAISettings::Get()->FluxModelName = NewText.ToString();
-					ApplySettingsToConfig();
+					if (NewValue.IsValid())
+					{
+						SelectedUNETModel = NewValue;
+						UGenAISettings::Get()->FluxModelName = *NewValue;
+						ApplySettingsToConfig();
+					}
 				})
-				.ToolTipText(LOCTEXT("FluxModelNameTip",
-					"Flux variant: flux-dev, flux-dev-fp8, or flux-schnell"))
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+				{
+					return SNew(STextBlock)
+						.Text(FText::FromString(*Item))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+				})
+				.ToolTipText(LOCTEXT("UNETModelTip",
+					"Flux UNET / diffusion model file — populated from ComfyUI's UNETLoader node"))
+				.Content()
+				[
+					SNew(STextBlock)
+					.Text_Lambda([this]()
+					{
+						return SelectedUNETModel.IsValid()
+							? FText::FromString(*SelectedUNETModel)
+							: FText::GetEmpty();
+					})
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				]
 			)
 		]
 
@@ -2740,6 +2826,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 		[
 			MakeSettingsRow(
 				LOCTEXT("ControlNetModelLabel", "ControlNet Model"),
+				FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("ControlNet")))),
 				SAssignNew(ControlNetCombo, SComboBox<TSharedPtr<FString>>)
 				.OptionsSource(&ControlNetOptions)
 				.InitiallySelectedItem(SelectedControlNet)
@@ -2778,6 +2865,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 		[
 			MakeSettingsRow(
 				LOCTEXT("ControlNetStrengthLabel", "ControlNet Strength"),
+				LOCTEXT("ControlNetStrengthTip", "How strongly the depth map influences generation (0.0 = ignored, 1.0 = full influence)"),
 				SNew(SSpinBox<float>)
 				.MinValue(0.0f)
 				.MaxValue(2.0f)
@@ -3593,6 +3681,10 @@ void SViewGenPanel::ResetSettingsToDefaults()
 	// LoRAs
 	Settings->LoRAModels = Defaults->LoRAModels;
 
+	// Model Paths — reset to defaults
+	Settings->ModelPaths.Empty();
+	Settings->EnsureDefaultModelPaths();
+
 	Settings->SaveConfig();
 
 	RefreshUIFromSettings();
@@ -3646,7 +3738,8 @@ void SViewGenPanel::RefreshUIFromSettings()
 	if (ComfyUIURLInput.IsValid()) ComfyUIURLInput->SetText(FText::FromString(Settings->APIEndpointURL));
 	if (ComfyUIApiKeyInput.IsValid()) ComfyUIApiKeyInput->SetText(FText::FromString(Settings->ComfyUIApiKey));
 	if (MeshyApiKeyInput.IsValid()) MeshyApiKeyInput->SetText(FText::FromString(Settings->MeshyApiKey));
-	if (FluxModelNameInput.IsValid()) FluxModelNameInput->SetText(FText::FromString(Settings->FluxModelName));
+	SelectedUNETModel = FindOrAddOption(UNETModelOptions, Settings->FluxModelName);
+	if (UNETModelCombo.IsValid()) { UNETModelCombo->RefreshOptions(); UNETModelCombo->SetSelectedItem(SelectedUNETModel); }
 	if (GeminiSystemPromptInput.IsValid()) GeminiSystemPromptInput->SetText(FText::FromString(Settings->GeminiSystemPrompt));
 
 	// LoRA list — update internal state and rebuild the visual list
@@ -3750,8 +3843,6 @@ void SViewGenPanel::RefreshUIFromSettings()
 	if (VideoPromptTextBox.IsValid()) VideoPromptTextBox->SetText(FText::FromString(Settings->VideoPrompt));
 	if (VideoNegativePromptTextBox.IsValid()) VideoNegativePromptTextBox->SetText(FText::FromString(Settings->VideoNegativePrompt));
 
-	// Refresh workflow preview after UI update from loaded settings
-	RefreshWorkflowPreview();
 }
 
 // ============================================================================
@@ -3948,8 +4039,6 @@ void SViewGenPanel::ApplySettingsToConfig()
 		Settings->SaveConfig();
 	}
 
-	// Update workflow preview graph when settings change
-	RefreshWorkflowPreview();
 }
 
 // ============================================================================
@@ -4358,88 +4447,6 @@ FString SViewGenPanel::EstimateVideoCost() const
 // ============================================================================
 // Workflow Preview
 // ============================================================================
-
-TSharedRef<SWidget> SViewGenPanel::BuildWorkflowPreviewSection()
-{
-	return SNew(SVerticalBox)
-
-		// Header toggle button
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		[
-			SNew(SButton)
-			.ButtonStyle(FAppStyle::Get(), "NoBorder")
-			.OnClicked_Lambda([this]() -> FReply
-			{
-				bWorkflowPreviewExpanded = !bWorkflowPreviewExpanded;
-				if (bWorkflowPreviewExpanded)
-				{
-					RefreshWorkflowPreview();
-				}
-				return FReply::Handled();
-			})
-			.Content()
-			[
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-				[
-					SNew(STextBlock)
-					.Text_Lambda([this]()
-					{
-						return bWorkflowPreviewExpanded
-							? FText::FromString(TEXT("\x25BC"))
-							: FText::FromString(TEXT("\x25B6"));
-					})
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("WorkflowPreview", "Workflow Preview"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-					.ColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.70f, 0.35f)))
-				]
-			]
-		]
-
-		// Preview body (collapsible)
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(4.0f, 2.0f)
-		[
-			SNew(SBox)
-			.Visibility_Lambda([this]()
-			{
-				return bWorkflowPreviewExpanded ? EVisibility::Visible : EVisibility::Collapsed;
-			})
-			.MinDesiredHeight(300.0f)
-			.MaxDesiredHeight(500.0f)
-			[
-				SNew(SBorder)
-				.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-				.BorderBackgroundColor(FLinearColor(0.05f, 0.05f, 0.06f))
-				.Padding(0.0f)
-				[
-					SAssignNew(WorkflowPreview, SWorkflowPreviewPanel)
-				]
-			]
-		];
-}
-
-void SViewGenPanel::RefreshWorkflowPreview()
-{
-	if (WorkflowPreview.IsValid() && bWorkflowPreviewExpanded)
-	{
-		WorkflowPreview->RefreshGraph();
-	}
-}
 
 // ============================================================================
 // Graph Editor (Interactive ComfyUI-style editor)
@@ -6372,6 +6379,12 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 		return FReply::Handled();
 	}
 
+	// Clear any previous error highlights before starting a new generation
+	if (GraphEditor.IsValid())
+	{
+		GraphEditor->ClearErrorNodes();
+	}
+
 	// Check for Sequence node — if present, use staged execution
 	if (GraphEditor->HasSequenceNode())
 	{
@@ -6868,6 +6881,9 @@ void SViewGenPanel::OnRunToNodeRequested(const FString& TargetNodeId)
 		UpdateStatusText(TEXT("A generation is already in progress"));
 		return;
 	}
+
+	// Clear any previous error highlights
+	GraphEditor->ClearErrorNodes();
 
 	// Export only the subgraph upstream of the target node
 	bool bNeedsViewport = false;

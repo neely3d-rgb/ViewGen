@@ -30,3 +30,7 @@ Thumbs.db
 
 # Release archives (built separately)
 *.zip
+Source/ViewGen/Public/SWorkflowPreviewPanel.h
+Source/ViewGen/Private/SWorkflowPreviewPanel.cpp
+Source/ViewGen/Private/SWorkflowPreviewPanel.cpp
+Source/ViewGen/Public/SWorkflowPreviewPanel.h

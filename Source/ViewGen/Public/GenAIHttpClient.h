@@ -13,6 +13,9 @@ DECLARE_DELEGATE_TwoParams(FOnGenerationComplete, bool /*bSuccess*/, UTexture2D*
 DECLARE_DELEGATE_OneParam(FOnGenerationProgress, float /*Progress 0-1*/);
 DECLARE_DELEGATE_OneParam(FOnGenerationError, const FString& /*ErrorMessage*/);
 
+/** Delegate fired when a node fails during execution (node ID + class_type for highlighting) */
+DECLARE_DELEGATE_TwoParams(FOnNodeError, const FString& /*NodeId*/, const FString& /*ClassType*/);
+
 /** Delegate fired when the currently executing node changes (node ID from the workflow) */
 DECLARE_DELEGATE_OneParam(FOnNodeExecuting, const FString& /*NodeId*/);
 
@@ -172,6 +175,7 @@ public:
 	FOnGenerationComplete OnComplete;
 	FOnGenerationProgress OnProgress;
 	FOnGenerationError OnError;
+	FOnNodeError OnNodeError;
 	FOnSegmentationComplete OnSegmentationComplete;
 	FOnNodeExecuting OnNodeExecuting;
 
@@ -185,10 +189,11 @@ public:
 	 * Callback for when model lists have been fetched from ComfyUI.
 	 * Arrays contain model filenames exactly as ComfyUI reports them.
 	 */
-	DECLARE_DELEGATE_FiveParams(FOnModelListsFetched,
+	DECLARE_DELEGATE_SixParams(FOnModelListsFetched,
 		const TArray<FString>& /*Checkpoints*/,
 		const TArray<FString>& /*LoRAs*/,
 		const TArray<FString>& /*ControlNets*/,
+		const TArray<FString>& /*UNETs*/,
 		const FGeminiNodeOptions& /*GeminiOptions*/,
 		const FKlingNodeOptions& /*KlingOptions*/);
 
@@ -327,6 +332,13 @@ private:
 
 	/** Helper: create a node input link [node_id, output_index] */
 	TSharedPtr<FJsonValue> MakeLink(const FString& NodeId, int32 OutputIndex = 0) const;
+
+	/**
+	 * Determine whether to use the Flux split-loader path (UNETLoader + DualCLIPLoader + VAELoader)
+	 * instead of CheckpointLoaderSimple. Returns true if the Flux toggle is on OR if the selected
+	 * checkpoint looks like a Flux UNET-only model (auto-detection fallback).
+	 */
+	static bool ShouldUseFluxPath(const class UGenAISettings* Settings);
 
 	/**
 	 * Add Flux model loader nodes (UNETLoader + DualCLIPLoader + VAELoader) to a workflow.

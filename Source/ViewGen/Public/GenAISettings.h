@@ -660,6 +660,21 @@ public:
 		meta = (DisplayName = "Tripo Credits Per Task", ClampMin = "0"))
 	int32 TripoCreditsCost = 20;
 
+	// ---- ComfyUI Model Paths ----
+	// Maps a model category key to its ComfyUI subdirectory.
+	// These are shown as tooltips on settings labels and persist in presets.
+	// Users can customize paths if their ComfyUI install uses non-standard directories.
+
+	UPROPERTY(config, EditAnywhere, Category = "ModelPaths",
+		meta = (DisplayName = "Model Directory Paths"))
+	TMap<FString, FString> ModelPaths;
+
+	/** Returns the ComfyUI model path for a given key, or a fallback default */
+	FString GetModelPath(const FString& Key) const;
+
+	/** Populate ModelPaths with defaults for any keys that are missing */
+	void EnsureDefaultModelPaths();
+
 	// ---- Presets ----
 
 	/** Get the directory where presets are stored */

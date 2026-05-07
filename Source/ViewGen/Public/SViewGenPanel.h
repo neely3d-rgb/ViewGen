@@ -19,7 +19,6 @@
 #include "GenAIHttpClient.h"
 #include "MeshyApiClient.h"
 
-class SWorkflowPreviewPanel;
 class SWorkflowGraphEditor;
 class UStaticMesh;
 
@@ -96,6 +95,8 @@ private:
 
 	/** Helper: build a labeled row with a label on the left and a widget on the right */
 	TSharedRef<SWidget> MakeSettingsRow(const FText& Label, TSharedRef<SWidget> ValueWidget);
+	/** Overload with a tooltip on the label (for showing ComfyUI model paths, etc.) */
+	TSharedRef<SWidget> MakeSettingsRow(const FText& Label, const FText& LabelTooltip, TSharedRef<SWidget> ValueWidget);
 
 	/** Write current UI settings back to UGenAISettings and save config */
 	void ApplySettingsToConfig();
@@ -148,7 +149,9 @@ private:
 	TSharedPtr<SEditableTextBox> ComfyUIURLInput;
 	TSharedPtr<SEditableTextBox> ComfyUIApiKeyInput;
 	TSharedPtr<SEditableTextBox> MeshyApiKeyInput;
-	TSharedPtr<SEditableTextBox> FluxModelNameInput;
+	TSharedPtr<SComboBox<TSharedPtr<FString>>> UNETModelCombo;
+	TArray<TSharedPtr<FString>> UNETModelOptions;
+	TSharedPtr<FString> SelectedUNETModel;
 	TSharedPtr<SEditableTextBox> GeminiSystemPromptInput;
 
 	// Model combo boxes (dynamically populated from ComfyUI)
@@ -166,6 +169,7 @@ private:
 	TArray<FString> AllCheckpoints;
 	TArray<FString> AllLoRAs;
 	TArray<FString> AllControlNets;
+	TArray<FString> AllUNETs;
 
 	/** Model architecture classification */
 	enum class EModelArch : uint8 { SD15, SDXL, Flux, Unknown };
@@ -197,7 +201,7 @@ private:
 	void FetchAndPopulateModels();
 
 	/** Called when ComfyUI returns available models */
-	void OnModelsReceived(const TArray<FString>& Checkpoints, const TArray<FString>& LoRAs, const TArray<FString>& ControlNets, const FGeminiNodeOptions& GeminiOptions, const FKlingNodeOptions& KlingOptions);
+	void OnModelsReceived(const TArray<FString>& Checkpoints, const TArray<FString>& LoRAs, const TArray<FString>& ControlNets, const TArray<FString>& UNETs, const FGeminiNodeOptions& GeminiOptions, const FKlingNodeOptions& KlingOptions);
 
 	// Gemini combo box data (dynamically populated from ComfyUI)
 	TArray<TSharedPtr<FString>> GeminiModelOptions;
@@ -241,11 +245,6 @@ private:
 	TSharedPtr<FString> FindOrAddOption(TArray<TSharedPtr<FString>>& Options, const FString& Value);
 
 	bool bSettingsExpanded = false;
-	bool bWorkflowPreviewExpanded = false;
-
-	/** Workflow preview panel widget (legacy read-only preview) */
-	TSharedPtr<SWorkflowPreviewPanel> WorkflowPreview;
-
 	/** Interactive graph editor widget */
 	TSharedPtr<SWorkflowGraphEditor> GraphEditor;
 
@@ -322,17 +321,8 @@ private:
 	/** Thumbnail brush for the LoadImage node preview in the details panel */
 	TSharedPtr<FSlateBrush> NodeDetailsThumbnailBrush;
 
-	/** Build the workflow preview collapsible section */
-	TSharedRef<SWidget> BuildWorkflowPreviewSection();
-
 	/** Build the interactive graph editor section */
 	TSharedRef<SWidget> BuildGraphEditorSection();
-
-	/** Refresh the workflow preview graph (call after any setting change) */
-	void RefreshWorkflowPreview();
-
-	/** Whether to show the graph editor instead of read-only preview */
-	bool bUseGraphEditor = true;
 
 	/** Whether the graph editor section is expanded */
 	bool bGraphEditorExpanded = false;

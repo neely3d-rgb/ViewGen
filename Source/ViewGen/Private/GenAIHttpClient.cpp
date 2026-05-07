@@ -69,13 +69,14 @@ void FGenAIHttpClient::FetchAvailableModels()
 		TArray<FString> Checkpoints;
 		TArray<FString> LoRAs;
 		TArray<FString> ControlNets;
+		TArray<FString> UNETs;
 		FGeminiNodeOptions GeminiOpts;
 		FKlingNodeOptions KlingOpts;
 
 		if (!bConnected || !Resp.IsValid() || Resp->GetResponseCode() != 200)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("ViewGen: Failed to fetch /object_info from ComfyUI"));
-			OnModelListsFetched.ExecuteIfBound(Checkpoints, LoRAs, ControlNets, GeminiOpts, KlingOpts);
+			OnModelListsFetched.ExecuteIfBound(Checkpoints, LoRAs, ControlNets, UNETs, GeminiOpts, KlingOpts);
 			return;
 		}
 
@@ -84,7 +85,7 @@ void FGenAIHttpClient::FetchAvailableModels()
 		if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
 		{
 			UE_LOG(LogTemp, Warning, TEXT("ViewGen: Failed to parse /object_info JSON"));
-			OnModelListsFetched.ExecuteIfBound(Checkpoints, LoRAs, ControlNets, GeminiOpts, KlingOpts);
+			OnModelListsFetched.ExecuteIfBound(Checkpoints, LoRAs, ControlNets, UNETs, GeminiOpts, KlingOpts);
 			return;
 		}
 
@@ -150,6 +151,7 @@ void FGenAIHttpClient::FetchAvailableModels()
 		ExtractOptions(TEXT("CheckpointLoaderSimple"), TEXT("ckpt_name"), Checkpoints);
 		ExtractOptions(TEXT("LoraLoader"), TEXT("lora_name"), LoRAs);
 		ExtractOptions(TEXT("ControlNetLoader"), TEXT("control_net_name"), ControlNets);
+		ExtractOptions(TEXT("UNETLoader"), TEXT("unet_name"), UNETs);
 
 		// Extract GeminiNanoBanana2 combo options (if the node is installed)
 		ExtractOptions(TEXT("GeminiNanoBanana2"), TEXT("model"), GeminiOpts.Models);
@@ -179,11 +181,11 @@ void FGenAIHttpClient::FetchAvailableModels()
 		ExtractOptions(TEXT("WanImageToVideoApi"), TEXT("model"), WanVideoOpts.Models);
 		ExtractOptions(TEXT("WanImageToVideoApi"), TEXT("resolution"), WanVideoOpts.Resolutions);
 
-		UE_LOG(LogTemp, Log, TEXT("ViewGen: Discovered %d checkpoints, %d LoRAs, %d ControlNets, %d Gemini models, %d Kling models, %d KlingVideo models, %d Veo3 models, %d Wan models"),
-			Checkpoints.Num(), LoRAs.Num(), ControlNets.Num(), GeminiOpts.Models.Num(), KlingOpts.Models.Num(),
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Discovered %d checkpoints, %d UNETs, %d LoRAs, %d ControlNets, %d Gemini models, %d Kling models, %d KlingVideo models, %d Veo3 models, %d Wan models"),
+			Checkpoints.Num(), UNETs.Num(), LoRAs.Num(), ControlNets.Num(), GeminiOpts.Models.Num(), KlingOpts.Models.Num(),
 			KlingVideoOpts.Models.Num(), Veo3Opts.Models.Num(), WanVideoOpts.Models.Num());
 
-		OnModelListsFetched.ExecuteIfBound(Checkpoints, LoRAs, ControlNets, GeminiOpts, KlingOpts);
+		OnModelListsFetched.ExecuteIfBound(Checkpoints, LoRAs, ControlNets, UNETs, GeminiOpts, KlingOpts);
 	});
 
 	Request->ProcessRequest();
@@ -781,6 +783,27 @@ TSharedPtr<FJsonValue> FGenAIHttpClient::MakeLink(const FString& NodeId, int32 O
 	return MakeShareable(new FJsonValueArray(LinkArray));
 }
 
+bool FGenAIHttpClient::ShouldUseFluxPath(const UGenAISettings* Settings)
+{
+	// Explicit toggle takes priority
+	if (Settings->bUseFluxControlNet)
+	{
+		return true;
+	}
+
+	// Auto-detect: if the selected checkpoint looks like a Flux UNET-only model,
+	// use the split-loader path to avoid the "missing CLIP" error
+	FString Lower = Settings->CheckpointName.ToLower();
+	if (Lower.Contains(TEXT("flux")))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen: Checkpoint '%s' looks like a Flux model but Flux mode is off — auto-switching to split-loader path (UNETLoader + DualCLIPLoader + VAELoader)"),
+			*Settings->CheckpointName);
+		return true;
+	}
+
+	return false;
+}
+
 void FGenAIHttpClient::AddFluxLoaderNodes(
 	TSharedPtr<FJsonObject> Workflow,
 	int32& NextNodeId,
@@ -795,9 +818,16 @@ void FGenAIHttpClient::AddFluxLoaderNodes(
 	OutVAEId = FString::FromInt(NextNodeId++);
 
 	// UNETLoader — loads the Flux diffusion model
+	// If the Flux toggle is explicitly on, use the UNET dropdown value.
+	// If we're here via auto-detection (toggle off, but checkpoint looks like Flux),
+	// use the checkpoint name since that's what the user actually selected.
 	{
+		FString UNETName = Settings->bUseFluxControlNet
+			? Settings->FluxModelName
+			: Settings->CheckpointName;
+
 		TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
-		Inputs->SetStringField(TEXT("unet_name"), Settings->FluxModelName);
+		Inputs->SetStringField(TEXT("unet_name"), UNETName);
 		Inputs->SetStringField(TEXT("weight_dtype"), Settings->FluxWeightDtype);
 		Workflow->SetObjectField(OutModelId, MakeNode(TEXT("UNETLoader"), Inputs));
 	}
@@ -828,7 +858,7 @@ TSharedPtr<FJsonObject> FGenAIHttpClient::BuildImg2ImgWorkflow(
 {
 	const UGenAISettings* Settings = UGenAISettings::Get();
 	TSharedPtr<FJsonObject> Workflow = MakeShareable(new FJsonObject);
-	const bool bFluxMode = Settings->bUseFluxControlNet;
+	const bool bFluxMode = ShouldUseFluxPath(Settings);
 
 	// Node IDs
 	FString CheckpointId = TEXT("1");
@@ -946,8 +976,13 @@ TSharedPtr<FJsonObject> FGenAIHttpClient::BuildImg2ImgWorkflow(
 
 			// LoadFluxControlNet
 			{
+				// Use the same UNET name logic as AddFluxLoaderNodes
+				FString UNETName = Settings->bUseFluxControlNet
+					? Settings->FluxModelName
+					: Settings->CheckpointName;
+
 				TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
-				Inputs->SetStringField(TEXT("model_name"), Settings->FluxModelName);
+				Inputs->SetStringField(TEXT("model_name"), UNETName);
 				Inputs->SetStringField(TEXT("controlnet_path"), Settings->ControlNetModel);
 				Workflow->SetObjectField(FluxCNLoaderId, MakeNode(TEXT("LoadFluxControlNet"), Inputs));
 			}
@@ -1065,7 +1100,7 @@ TSharedPtr<FJsonObject> FGenAIHttpClient::BuildTxt2ImgWorkflow(
 {
 	const UGenAISettings* Settings = UGenAISettings::Get();
 	TSharedPtr<FJsonObject> Workflow = MakeShareable(new FJsonObject);
-	const bool bFluxMode = Settings->bUseFluxControlNet;
+	const bool bFluxMode = ShouldUseFluxPath(Settings);
 
 	FString CheckpointId = TEXT("1");
 	FString PosClipId = TEXT("2");
@@ -1194,7 +1229,7 @@ TSharedPtr<FJsonObject> FGenAIHttpClient::BuildDepthOnlyWorkflow(
 {
 	const UGenAISettings* Settings = UGenAISettings::Get();
 	TSharedPtr<FJsonObject> Workflow = MakeShareable(new FJsonObject);
-	const bool bFluxMode = Settings->bUseFluxControlNet;
+	const bool bFluxMode = ShouldUseFluxPath(Settings);
 
 	// Node IDs
 	FString CheckpointId = TEXT("1");
@@ -1294,8 +1329,12 @@ TSharedPtr<FJsonObject> FGenAIHttpClient::BuildDepthOnlyWorkflow(
 
 		// LoadFluxControlNet
 		{
+			FString UNETName = Settings->bUseFluxControlNet
+				? Settings->FluxModelName
+				: Settings->CheckpointName;
+
 			TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
-			Inputs->SetStringField(TEXT("model_name"), Settings->FluxModelName);
+			Inputs->SetStringField(TEXT("model_name"), UNETName);
 			Inputs->SetStringField(TEXT("controlnet_path"), Settings->ControlNetModel);
 			Workflow->SetObjectField(FluxCNLoaderId, MakeNode(TEXT("LoadFluxControlNet"), Inputs));
 		}
@@ -2044,6 +2083,131 @@ void FGenAIHttpClient::OnPromptResponseReceived(FHttpRequestPtr Request, FHttpRe
 }
 
 // ============================================================================
+// Error Diagnosis Helpers
+// ============================================================================
+
+/**
+ * Analyses a ComfyUI execution error and returns a human-readable hint
+ * pointing the user to the correct ComfyUI models subdirectory.
+ */
+static FString DiagnoseModelError(const FString& NodeType, const FString& ErrorMsg)
+{
+	const UGenAISettings* S = UGenAISettings::Get();
+	if (!S) return FString();
+
+	FString Hint;
+
+	// Detect "input is invalid: None" pattern — upstream node produced null output.
+	// This almost always means a loader node couldn't find its model file.
+	const bool bInvalidNone = ErrorMsg.Contains(TEXT("is invalid: None"));
+	const bool bFileNotFound = ErrorMsg.Contains(TEXT("No such file"))
+		|| ErrorMsg.Contains(TEXT("FileNotFoundError"))
+		|| ErrorMsg.Contains(TEXT("does not exist"));
+	const bool bCheckpointHint = ErrorMsg.Contains(TEXT("checkpoint"))
+		|| ErrorMsg.Contains(TEXT("does not contain a valid clip"));
+
+	if (bInvalidNone || bFileNotFound || bCheckpointHint)
+	{
+		// Map common node types to the model category key
+		struct FNodePathHint
+		{
+			const TCHAR* NodePattern;
+			const TCHAR* PathKey;
+			const TCHAR* Description;
+		};
+
+		static const FNodePathHint Hints[] = {
+			{ TEXT("CheckpointLoader"),  TEXT("Checkpoint"),   TEXT("checkpoint/safetensors file") },
+			{ TEXT("UNETLoader"),        TEXT("UNET"),         TEXT("UNET/diffusion model file") },
+			{ TEXT("DiffusionLoader"),   TEXT("UNET"),         TEXT("diffusion model file") },
+			{ TEXT("CLIPLoader"),        TEXT("CLIP"),         TEXT("CLIP model file") },
+			{ TEXT("CLIPTextEncode"),    TEXT("CLIP"),         TEXT("CLIP model (from upstream loader)") },
+			{ TEXT("DualCLIPLoader"),    TEXT("CLIP"),         TEXT("CLIP model files") },
+			{ TEXT("TripleCLIPLoader"),  TEXT("CLIP"),         TEXT("CLIP model files") },
+			{ TEXT("CLIPVisionLoader"),  TEXT("CLIPVision"),   TEXT("CLIP vision model file") },
+			{ TEXT("VAELoader"),         TEXT("VAE"),          TEXT("VAE model file") },
+			{ TEXT("VAEDecode"),         TEXT("VAE"),          TEXT("VAE model (from upstream loader)") },
+			{ TEXT("VAEEncode"),         TEXT("VAE"),          TEXT("VAE model (from upstream loader)") },
+			{ TEXT("ControlNetLoader"),  TEXT("ControlNet"),   TEXT("ControlNet model file") },
+			{ TEXT("LoraLoader"),        TEXT("LoRA"),         TEXT("LoRA file") },
+			{ TEXT("UpscaleModel"),      TEXT("Upscale"),      TEXT("upscale model file") },
+		};
+
+		// Special case: CLIPTextEncode failures are almost never about CLIPTextEncode
+		// itself — the real problem is an upstream loader that couldn't find its model.
+		if (NodeType.Contains(TEXT("CLIPTextEncode")) && bInvalidNone)
+		{
+			if (bCheckpointHint)
+			{
+				// Error explicitly mentions checkpoint not containing a valid clip
+				Hint = FString::Printf(
+					TEXT("\n\nHint: Your checkpoint may not contain a CLIP model, or the checkpoint file is ")
+					TEXT("missing. Check that it exists in ComfyUI's \"%s\" directory. If your workflow ")
+					TEXT("uses a separate CLIP loader, ensure the CLIP file is in \"%s\" or \"%s\"."),
+					*S->GetModelPath(TEXT("Checkpoint")),
+					*S->GetModelPath(TEXT("CLIP")),
+					*S->GetModelPath(TEXT("TextEncoder")));
+			}
+			else
+			{
+				Hint = FString::Printf(
+					TEXT("\n\nHint: The upstream CLIP/Checkpoint loader produced null output. ")
+					TEXT("Check that the model file exists in ComfyUI's \"%s\" or \"%s\" directory."),
+					*S->GetModelPath(TEXT("Checkpoint")), *S->GetModelPath(TEXT("CLIP")));
+			}
+		}
+		else
+		{
+			for (const auto& H : Hints)
+			{
+				if (NodeType.Contains(H.NodePattern))
+				{
+					Hint = FString::Printf(
+						TEXT("\n\nHint: Ensure your %s is placed in ComfyUI's \"%s\" directory."),
+						H.Description, *S->GetModelPath(H.PathKey));
+					break;
+				}
+			}
+		}
+
+		// Fallback for other nodes with "input is invalid: None"
+		if (Hint.IsEmpty() && bInvalidNone)
+		{
+			if (ErrorMsg.Contains(TEXT("clip")))
+			{
+				Hint = FString::Printf(
+					TEXT("\n\nHint: An upstream CLIP/Checkpoint loader produced null output. ")
+					TEXT("Check that the model file exists in ComfyUI's \"%s\" or \"%s\" directory."),
+					*S->GetModelPath(TEXT("Checkpoint")), *S->GetModelPath(TEXT("CLIP")));
+			}
+			else if (ErrorMsg.Contains(TEXT("model")))
+			{
+				Hint = FString::Printf(
+					TEXT("\n\nHint: An upstream model loader produced null output. ")
+					TEXT("Check that the model file exists in ComfyUI's \"%s\" directory."),
+					*S->GetModelPath(TEXT("Checkpoint")));
+			}
+			else if (ErrorMsg.Contains(TEXT("vae")))
+			{
+				Hint = FString::Printf(
+					TEXT("\n\nHint: An upstream VAE loader produced null output. ")
+					TEXT("Check that the VAE file exists in ComfyUI's \"%s\" directory."),
+					*S->GetModelPath(TEXT("VAE")));
+			}
+		}
+
+		// Generic fallback hint if we couldn't match a specific pattern
+		if (Hint.IsEmpty() && (bFileNotFound || bCheckpointHint))
+		{
+			Hint = TEXT("\n\nHint: A required model file may be missing from your ComfyUI models directory. "
+				"Check the ComfyUI console for the exact path it tried to load.");
+		}
+	}
+
+	return Hint;
+}
+
+// ============================================================================
 // History Polling
 // ============================================================================
 
@@ -2122,20 +2286,36 @@ void FGenAIHttpClient::OnHistoryResponseReceived(FHttpRequestPtr Request, FHttpR
 								TSharedPtr<FJsonObject> MsgData = (*MsgPair)[1]->AsObject();
 								if (MsgData.IsValid())
 								{
-									FString ExMsg, NodeInfo;
+									FString ExMsg, NodeInfo, ErrorNodeId, ErrorClassType;
 									MsgData->TryGetStringField(TEXT("exception_message"), ExMsg);
-									if (!MsgData->TryGetStringField(TEXT("class_type"), NodeInfo))
+									MsgData->TryGetStringField(TEXT("node_id"), ErrorNodeId);
+									MsgData->TryGetStringField(TEXT("class_type"), ErrorClassType);
+
+									// Display name: prefer class_type, fall back to node_type, then node_id
+									NodeInfo = ErrorClassType;
+									if (NodeInfo.IsEmpty())
 									{
 										MsgData->TryGetStringField(TEXT("node_type"), NodeInfo);
 									}
 									if (NodeInfo.IsEmpty())
 									{
-										MsgData->TryGetStringField(TEXT("node_id"), NodeInfo);
+										NodeInfo = ErrorNodeId;
 									}
+
 									if (!ExMsg.IsEmpty())
 									{
 										ErrorDetail = FString::Printf(TEXT("Node '%s' failed: %s"),
 											*NodeInfo, *ExMsg.Left(300));
+
+										// Append model path hints for common missing-model errors
+										ErrorDetail += DiagnoseModelError(NodeInfo, ExMsg);
+									}
+
+									// Fire the node error delegate so the graph editor
+									// can highlight the failed node with a red glow
+									if (!ErrorNodeId.IsEmpty() || !ErrorClassType.IsEmpty())
+									{
+										OnNodeError.ExecuteIfBound(ErrorNodeId, ErrorClassType);
 									}
 
 									// Log Python traceback from ComfyUI error

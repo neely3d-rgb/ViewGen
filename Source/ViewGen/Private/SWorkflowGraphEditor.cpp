@@ -54,7 +54,7 @@ namespace GraphConstants
 }
 
 // ============================================================================
-// Node Colour Palette (matching original SWorkflowPreviewPanel)
+// Node Colour Palette
 // ============================================================================
 
 FLinearColor SWorkflowGraphEditor::GetNodeColor(const FString& ClassType)
@@ -1618,8 +1618,30 @@ void SWorkflowGraphEditor::DrawNode(const FGraphNode& Node, const FGeometry& Geo
 
 	const FSlateBrush* WhiteBox = FCoreStyle::Get().GetBrush("GenericWhiteBox");
 
+	// Error highlight — red glow when node caused an execution error
+	if (Node.bHasError)
+	{
+		FSlateDrawElement::MakeBox(
+			OutDrawElements, LayerId,
+			Geom.ToPaintGeometry(Size + FVector2D(10, 10), FSlateLayoutTransform(Pos - FVector2D(5, 5))),
+			WhiteBox, ESlateDrawEffect::None,
+			FLinearColor(1.0f, 0.1f, 0.1f, 0.25f)
+		);
+		FSlateDrawElement::MakeBox(
+			OutDrawElements, LayerId,
+			Geom.ToPaintGeometry(Size + FVector2D(6, 6), FSlateLayoutTransform(Pos - FVector2D(3, 3))),
+			WhiteBox, ESlateDrawEffect::None,
+			FLinearColor(1.0f, 0.15f, 0.15f, 0.5f)
+		);
+		FSlateDrawElement::MakeBox(
+			OutDrawElements, LayerId,
+			Geom.ToPaintGeometry(Size + FVector2D(2, 2), FSlateLayoutTransform(Pos - FVector2D(1, 1))),
+			WhiteBox, ESlateDrawEffect::None,
+			FLinearColor(0.9f, 0.2f, 0.2f, 0.7f)
+		);
+	}
 	// Execution highlight — bright yellow/amber glow when node is being processed
-	if (Node.bIsExecuting)
+	else if (Node.bIsExecuting)
 	{
 		FSlateDrawElement::MakeBox(
 			OutDrawElements, LayerId,
@@ -3228,6 +3250,60 @@ void SWorkflowGraphEditor::ClearExecutingNodes()
 		if (Node.bIsExecuting)
 		{
 			Node.bIsExecuting = false;
+			bChanged = true;
+		}
+	}
+	if (bChanged)
+	{
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
+void SWorkflowGraphEditor::SetErrorNode(const FString& NodeIdOrClassType)
+{
+	bool bFound = false;
+
+	// First: try to match by node ID (exact match from ComfyUI's node_id field)
+	for (FGraphNode& Node : Nodes)
+	{
+		if (Node.Id == NodeIdOrClassType)
+		{
+			Node.bHasError = true;
+			bFound = true;
+			break;
+		}
+	}
+
+	// Second: if no ID match, try matching by class_type (ComfyUI reports this
+	// in the execution_error message). Highlight the first matching node.
+	if (!bFound)
+	{
+		for (FGraphNode& Node : Nodes)
+		{
+			if (Node.ClassType == NodeIdOrClassType)
+			{
+				Node.bHasError = true;
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	if (bFound)
+	{
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: SetErrorNode('%s') — node highlighted red"), *NodeIdOrClassType);
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
+void SWorkflowGraphEditor::ClearErrorNodes()
+{
+	bool bChanged = false;
+	for (FGraphNode& Node : Nodes)
+	{
+		if (Node.bHasError)
+		{
+			Node.bHasError = false;
 			bChanged = true;
 		}
 	}
@@ -5935,156 +6011,272 @@ void SWorkflowGraphEditor::FrameAllNodes()
 
 void SWorkflowGraphEditor::BuildPresetGraph()
 {
-	// This rebuilds the graph from settings, similar to the old SWorkflowPreviewPanel
-	// but now as editable FGraphNodes.
-	// The actual graph content will come from the generation workflow JSON
-	// built by GenAIHttpClient, which we can import.
+	// Rebuilds the graph from current UGenAISettings, respecting the active
+	// generation mode.  Produces fully editable FGraphNodes with proper pin
+	// defs from the ComfyUI node database.
 	ClearGraph();
 
-	// For now, build a simple txt2img graph as default
 	const UGenAISettings* Settings = UGenAISettings::Get();
 	if (!Settings) return;
 
 	const FComfyNodeDatabase& DB = FComfyNodeDatabase::Get();
-	if (!DB.IsPopulated())
+
+	// ------------------------------------------------------------------
+	// Helper: add a node from the database (with position hint for layout)
+	// ------------------------------------------------------------------
+	int32 NextId = 1;
+	auto AddNode = [&](const FString& ClassType, FVector2D Pos) -> FString
 	{
-		// Database not loaded yet — create minimal hardcoded graph
-		FGraphNode CkptNode;
-		CkptNode.Id = TEXT("1");
-		CkptNode.ClassType = TEXT("CheckpointLoaderSimple");
-		CkptNode.Title = TEXT("Load Checkpoint");
-		CkptNode.Position = FVector2D(0, 0);
-		CkptNode.HeaderColor = GetNodeColor(TEXT("Checkpoint"));
-		CkptNode.WidgetValues.Add(TEXT("ckpt_name"), Settings->CheckpointName);
-		CkptNode.WidgetOrder.Add(TEXT("ckpt_name"));
+		FString Id = FString::FromInt(NextId++);
 
-		FGraphPin OutModel; OutModel.Name = TEXT("MODEL"); OutModel.Type = TEXT("MODEL"); OutModel.bIsInput = false; OutModel.PinIndex = 0; OutModel.OwnerNodeId = TEXT("1");
-		FGraphPin OutClip; OutClip.Name = TEXT("CLIP"); OutClip.Type = TEXT("CLIP"); OutClip.bIsInput = false; OutClip.PinIndex = 1; OutClip.OwnerNodeId = TEXT("1");
-		FGraphPin OutVAE; OutVAE.Name = TEXT("VAE"); OutVAE.Type = TEXT("VAE"); OutVAE.bIsInput = false; OutVAE.PinIndex = 2; OutVAE.OwnerNodeId = TEXT("1");
-		CkptNode.OutputPins = { OutModel, OutClip, OutVAE };
-		ComputeNodeSize(CkptNode);
-		NodeIndexMap.Add(TEXT("1"), Nodes.Add(MoveTemp(CkptNode)));
-
-		// Minimal KSampler
-		FGraphNode SamplerNode;
-		SamplerNode.Id = TEXT("5");
-		SamplerNode.ClassType = TEXT("KSampler");
-		SamplerNode.Title = TEXT("KSampler");
-		SamplerNode.Position = FVector2D(300, 0);
-		SamplerNode.HeaderColor = GetNodeColor(TEXT("KSampler"));
-		SamplerNode.WidgetValues.Add(TEXT("steps"), FString::FromInt(Settings->Steps));
-		SamplerNode.WidgetValues.Add(TEXT("cfg"), FString::SanitizeFloat(Settings->CFGScale));
-		SamplerNode.WidgetOrder.Add(TEXT("steps"));
-		SamplerNode.WidgetOrder.Add(TEXT("cfg"));
-
-		FGraphPin InModel; InModel.Name = TEXT("model"); InModel.Type = TEXT("MODEL"); InModel.bIsInput = true; InModel.PinIndex = 0; InModel.OwnerNodeId = TEXT("5");
-		FGraphPin InPos; InPos.Name = TEXT("positive"); InPos.Type = TEXT("CONDITIONING"); InPos.bIsInput = true; InPos.PinIndex = 1; InPos.OwnerNodeId = TEXT("5");
-		FGraphPin InNeg; InNeg.Name = TEXT("negative"); InNeg.Type = TEXT("CONDITIONING"); InNeg.bIsInput = true; InNeg.PinIndex = 2; InNeg.OwnerNodeId = TEXT("5");
-		FGraphPin InLatent; InLatent.Name = TEXT("latent_image"); InLatent.Type = TEXT("LATENT"); InLatent.bIsInput = true; InLatent.PinIndex = 3; InLatent.OwnerNodeId = TEXT("5");
-		SamplerNode.InputPins = { InModel, InPos, InNeg, InLatent };
-
-		FGraphPin SamplerOut; SamplerOut.Name = TEXT("LATENT"); SamplerOut.Type = TEXT("LATENT"); SamplerOut.bIsInput = false; SamplerOut.PinIndex = 0; SamplerOut.OwnerNodeId = TEXT("5");
-		SamplerNode.OutputPins = { SamplerOut };
-		ComputeNodeSize(SamplerNode);
-		NodeIndexMap.Add(TEXT("5"), Nodes.Add(MoveTemp(SamplerNode)));
-
-		// Add connection
-		AddConnection(TEXT("1"), 0, TEXT("5"), TEXT("model"));
-
-		return;
-	}
-
-	// With database available, build from defs
-	auto AddNodeFromDB = [&](const FString& ClassType, const FString& Id, FVector2D Pos) -> FString
-	{
-		const FComfyNodeDef* Def = DB.FindNode(ClassType);
-		if (!Def) return FString();
-
-		FGraphNode Node = CreateNodeFromDef(*Def, Id, Pos);
-		int32 Idx = Nodes.Add(MoveTemp(Node));
-		NodeIndexMap.Add(Id, Idx);
-
-		int32 IdNum;
-		if (FDefaultValueHelper::ParseInt(Id, IdNum))
+		if (DB.IsPopulated())
 		{
-			NextAutoNodeId = FMath::Max(NextAutoNodeId, IdNum + 1);
+			const FComfyNodeDef* Def = DB.FindNode(ClassType);
+			if (Def)
+			{
+				FGraphNode Node = CreateNodeFromDef(*Def, Id, Pos);
+				int32 Idx = Nodes.Add(MoveTemp(Node));
+				NodeIndexMap.Add(Id, Idx);
+				NextAutoNodeId = FMath::Max(NextAutoNodeId, NextId);
+				return Id;
+			}
 		}
 
+		// Fallback: create a stub node without database defs
+		FGraphNode Node;
+		Node.Id = Id;
+		Node.ClassType = ClassType;
+		Node.Title = ClassType;
+		Node.Position = Pos;
+		Node.HeaderColor = GetNodeColor(ClassType);
+		ComputeNodeSize(Node);
+		int32 Idx = Nodes.Add(MoveTemp(Node));
+		NodeIndexMap.Add(Id, Idx);
+		NextAutoNodeId = FMath::Max(NextAutoNodeId, NextId);
 		return Id;
 	};
 
-	// Build based on current mode
-	FString CkptId = AddNodeFromDB(TEXT("CheckpointLoaderSimple"), TEXT("1"), FVector2D(0, 0));
-	if (!CkptId.IsEmpty())
+	// Helper: set a widget value on a node
+	auto SetWidget = [&](const FString& Id, const FString& Key, const FString& Value)
 	{
-		int32* Idx = NodeIndexMap.Find(CkptId);
-		if (Idx) Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("ckpt_name")) = Settings->CheckpointName;
+		int32* Idx = NodeIndexMap.Find(Id);
+		if (Idx) Nodes[*Idx].WidgetValues.FindOrAdd(Key) = Value;
+	};
+
+	// Helper: set a custom title
+	auto SetTitle = [&](const FString& Id, const FString& Title)
+	{
+		int32* Idx = NodeIndexMap.Find(Id);
+		if (Idx) Nodes[*Idx].Title = Title;
+	};
+
+	// ------------------------------------------------------------------
+	// Build graph based on generation mode
+	// ------------------------------------------------------------------
+	switch (Settings->GenerationMode)
+	{
+	case EGenMode::PromptOnly:
+	{
+		// ---- Txt2Img ----
+		FString CkptId = AddNode(TEXT("CheckpointLoaderSimple"), FVector2D(0, 0));
+		SetWidget(CkptId, TEXT("ckpt_name"), Settings->CheckpointName);
+
+		FString PosClipId = AddNode(TEXT("CLIPTextEncode"), FVector2D(300, -80));
+		SetTitle(PosClipId, TEXT("CLIP (Positive)"));
+		SetWidget(PosClipId, TEXT("text"), Settings->DefaultPrompt);
+
+		FString NegClipId = AddNode(TEXT("CLIPTextEncode"), FVector2D(300, 80));
+		SetTitle(NegClipId, TEXT("CLIP (Negative)"));
+		SetWidget(NegClipId, TEXT("text"), Settings->DefaultNegativePrompt);
+
+		FString EmptyLatentId = AddNode(TEXT("EmptyLatentImage"), FVector2D(300, 200));
+		SetWidget(EmptyLatentId, TEXT("width"), FString::FromInt(Settings->OutputWidth));
+		SetWidget(EmptyLatentId, TEXT("height"), FString::FromInt(Settings->OutputHeight));
+
+		FString KSamplerId = AddNode(TEXT("KSampler"), FVector2D(600, 0));
+		SetWidget(KSamplerId, TEXT("steps"), FString::FromInt(Settings->Steps));
+		SetWidget(KSamplerId, TEXT("cfg"), FString::SanitizeFloat(Settings->CFGScale));
+		SetWidget(KSamplerId, TEXT("sampler_name"), Settings->SamplerName);
+		SetWidget(KSamplerId, TEXT("scheduler"), Settings->SchedulerName);
+
+		FString VaeDecId = AddNode(TEXT("VAEDecode"), FVector2D(900, 0));
+		FString SaveId = AddNode(TEXT("SaveImage"), FVector2D(1200, 0));
+
+		AddConnection(CkptId, 0, KSamplerId, TEXT("model"));
+		AddConnection(CkptId, 1, PosClipId, TEXT("clip"));
+		AddConnection(CkptId, 1, NegClipId, TEXT("clip"));
+		AddConnection(PosClipId, 0, KSamplerId, TEXT("positive"));
+		AddConnection(NegClipId, 0, KSamplerId, TEXT("negative"));
+		AddConnection(EmptyLatentId, 0, KSamplerId, TEXT("latent_image"));
+		AddConnection(KSamplerId, 0, VaeDecId, TEXT("samples"));
+		AddConnection(CkptId, 2, VaeDecId, TEXT("vae"));
+		AddConnection(VaeDecId, 0, SaveId, TEXT("images"));
+		break;
 	}
 
-	FString PosClipId = AddNodeFromDB(TEXT("CLIPTextEncode"), TEXT("2"), FVector2D(300, -80));
-	if (!PosClipId.IsEmpty())
+	case EGenMode::Img2Img:
 	{
-		int32* Idx = NodeIndexMap.Find(PosClipId);
-		if (Idx)
+		// ---- Img2Img (viewport capture → VAE Encode → KSampler) ----
+		FString CkptId = AddNode(TEXT("CheckpointLoaderSimple"), FVector2D(0, 0));
+		SetWidget(CkptId, TEXT("ckpt_name"), Settings->CheckpointName);
+
+		FString PosClipId = AddNode(TEXT("CLIPTextEncode"), FVector2D(300, -80));
+		SetTitle(PosClipId, TEXT("CLIP (Positive)"));
+		SetWidget(PosClipId, TEXT("text"), Settings->DefaultPrompt);
+
+		FString NegClipId = AddNode(TEXT("CLIPTextEncode"), FVector2D(300, 80));
+		SetTitle(NegClipId, TEXT("CLIP (Negative)"));
+		SetWidget(NegClipId, TEXT("text"), Settings->DefaultNegativePrompt);
+
+		FString LoadImgId = AddNode(TEXT("LoadImage"), FVector2D(0, 200));
+		SetTitle(LoadImgId, TEXT("Load Viewport"));
+
+		FString VaeEncId = AddNode(TEXT("VAEEncode"), FVector2D(300, 200));
+
+		FString KSamplerId = AddNode(TEXT("KSampler"), FVector2D(600, 0));
+		SetWidget(KSamplerId, TEXT("steps"), FString::FromInt(Settings->Steps));
+		SetWidget(KSamplerId, TEXT("cfg"), FString::SanitizeFloat(Settings->CFGScale));
+		SetWidget(KSamplerId, TEXT("denoise"), FString::SanitizeFloat(Settings->DenoisingStrength));
+		SetWidget(KSamplerId, TEXT("sampler_name"), Settings->SamplerName);
+		SetWidget(KSamplerId, TEXT("scheduler"), Settings->SchedulerName);
+
+		FString VaeDecId = AddNode(TEXT("VAEDecode"), FVector2D(900, 0));
+		FString SaveId = AddNode(TEXT("SaveImage"), FVector2D(1200, 0));
+
+		// Connections
+		AddConnection(CkptId, 0, KSamplerId, TEXT("model"));
+		AddConnection(CkptId, 1, PosClipId, TEXT("clip"));
+		AddConnection(CkptId, 1, NegClipId, TEXT("clip"));
+		AddConnection(LoadImgId, 0, VaeEncId, TEXT("pixels"));
+		AddConnection(CkptId, 2, VaeEncId, TEXT("vae"));
+		AddConnection(PosClipId, 0, KSamplerId, TEXT("positive"));
+		AddConnection(NegClipId, 0, KSamplerId, TEXT("negative"));
+		AddConnection(VaeEncId, 0, KSamplerId, TEXT("latent_image"));
+		AddConnection(KSamplerId, 0, VaeDecId, TEXT("samples"));
+		AddConnection(CkptId, 2, VaeDecId, TEXT("vae"));
+		AddConnection(VaeDecId, 0, SaveId, TEXT("images"));
+
+		// ControlNet depth (if enabled)
+		if (Settings->bEnableDepthControlNet)
 		{
-			Nodes[*Idx].Title = TEXT("CLIP (Positive)");
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("text")) = Settings->DefaultPrompt;
+			FString DepthLoadId = AddNode(TEXT("LoadImage"), FVector2D(0, 350));
+			SetTitle(DepthLoadId, TEXT("Load Depth"));
+
+			FString CNLoaderId = AddNode(TEXT("ControlNetLoader"), FVector2D(0, 480));
+			SetWidget(CNLoaderId, TEXT("control_net_name"), Settings->ControlNetModel);
+
+			FString CNApplyId = AddNode(TEXT("ControlNetApplyAdvanced"), FVector2D(450, 350));
+			SetWidget(CNApplyId, TEXT("strength"), FString::SanitizeFloat(Settings->ControlNetWeight));
+
+			AddConnection(PosClipId, 0, CNApplyId, TEXT("positive"));
+			AddConnection(NegClipId, 0, CNApplyId, TEXT("negative"));
+			AddConnection(CNLoaderId, 0, CNApplyId, TEXT("control_net"));
+			AddConnection(DepthLoadId, 0, CNApplyId, TEXT("image"));
+
+			// Re-wire KSampler to use ControlNet-conditioned outputs
+			// Remove old positive/negative connections, add new ones
+			RemoveConnection(KSamplerId, TEXT("positive"));
+			RemoveConnection(KSamplerId, TEXT("negative"));
+			AddConnection(CNApplyId, 0, KSamplerId, TEXT("positive"));
+			AddConnection(CNApplyId, 1, KSamplerId, TEXT("negative"));
 		}
+		break;
 	}
 
-	FString NegClipId = AddNodeFromDB(TEXT("CLIPTextEncode"), TEXT("3"), FVector2D(300, 80));
-	if (!NegClipId.IsEmpty())
+	case EGenMode::DepthAndPrompt:
 	{
-		int32* Idx = NodeIndexMap.Find(NegClipId);
-		if (Idx)
-		{
-			Nodes[*Idx].Title = TEXT("CLIP (Negative)");
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("text")) = Settings->DefaultNegativePrompt;
-		}
+		// ---- Depth + Prompt (empty latent + ControlNet depth) ----
+		FString CkptId = AddNode(TEXT("CheckpointLoaderSimple"), FVector2D(0, 0));
+		SetWidget(CkptId, TEXT("ckpt_name"), Settings->CheckpointName);
+
+		FString PosClipId = AddNode(TEXT("CLIPTextEncode"), FVector2D(300, -80));
+		SetTitle(PosClipId, TEXT("CLIP (Positive)"));
+		SetWidget(PosClipId, TEXT("text"), Settings->DefaultPrompt);
+
+		FString NegClipId = AddNode(TEXT("CLIPTextEncode"), FVector2D(300, 80));
+		SetTitle(NegClipId, TEXT("CLIP (Negative)"));
+		SetWidget(NegClipId, TEXT("text"), Settings->DefaultNegativePrompt);
+
+		FString EmptyLatentId = AddNode(TEXT("EmptyLatentImage"), FVector2D(300, 200));
+		SetWidget(EmptyLatentId, TEXT("width"), FString::FromInt(Settings->OutputWidth));
+		SetWidget(EmptyLatentId, TEXT("height"), FString::FromInt(Settings->OutputHeight));
+
+		FString DepthLoadId = AddNode(TEXT("LoadImage"), FVector2D(0, 350));
+		SetTitle(DepthLoadId, TEXT("Load Depth"));
+
+		FString CNLoaderId = AddNode(TEXT("ControlNetLoader"), FVector2D(0, 480));
+		SetWidget(CNLoaderId, TEXT("control_net_name"), Settings->ControlNetModel);
+
+		FString CNApplyId = AddNode(TEXT("ControlNetApplyAdvanced"), FVector2D(450, 350));
+		SetWidget(CNApplyId, TEXT("strength"), FString::SanitizeFloat(Settings->ControlNetWeight));
+
+		FString KSamplerId = AddNode(TEXT("KSampler"), FVector2D(700, 0));
+		SetWidget(KSamplerId, TEXT("steps"), FString::FromInt(Settings->Steps));
+		SetWidget(KSamplerId, TEXT("cfg"), FString::SanitizeFloat(Settings->CFGScale));
+		SetWidget(KSamplerId, TEXT("sampler_name"), Settings->SamplerName);
+		SetWidget(KSamplerId, TEXT("scheduler"), Settings->SchedulerName);
+
+		FString VaeDecId = AddNode(TEXT("VAEDecode"), FVector2D(1000, 0));
+		FString SaveId = AddNode(TEXT("SaveImage"), FVector2D(1300, 0));
+
+		// Connections
+		AddConnection(CkptId, 1, PosClipId, TEXT("clip"));
+		AddConnection(CkptId, 1, NegClipId, TEXT("clip"));
+		AddConnection(PosClipId, 0, CNApplyId, TEXT("positive"));
+		AddConnection(NegClipId, 0, CNApplyId, TEXT("negative"));
+		AddConnection(CNLoaderId, 0, CNApplyId, TEXT("control_net"));
+		AddConnection(DepthLoadId, 0, CNApplyId, TEXT("image"));
+		AddConnection(CkptId, 0, KSamplerId, TEXT("model"));
+		AddConnection(CNApplyId, 0, KSamplerId, TEXT("positive"));
+		AddConnection(CNApplyId, 1, KSamplerId, TEXT("negative"));
+		AddConnection(EmptyLatentId, 0, KSamplerId, TEXT("latent_image"));
+		AddConnection(KSamplerId, 0, VaeDecId, TEXT("samples"));
+		AddConnection(CkptId, 2, VaeDecId, TEXT("vae"));
+		AddConnection(VaeDecId, 0, SaveId, TEXT("images"));
+		break;
 	}
 
-	FString EmptyLatentId = AddNodeFromDB(TEXT("EmptyLatentImage"), TEXT("4"), FVector2D(300, 200));
-	if (!EmptyLatentId.IsEmpty())
+	case EGenMode::Gemini:
 	{
-		int32* Idx = NodeIndexMap.Find(EmptyLatentId);
-		if (Idx)
-		{
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("width")) = FString::FromInt(Settings->OutputWidth);
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("height")) = FString::FromInt(Settings->OutputHeight);
-		}
+		// ---- Gemini (NanoBanana2) ----
+		FString ViewportId = AddNode(TEXT("LoadImage"), FVector2D(0, 0));
+		SetTitle(ViewportId, TEXT("Load Viewport"));
+
+		FString DepthId = AddNode(TEXT("LoadImage"), FVector2D(0, 150));
+		SetTitle(DepthId, TEXT("Load Depth"));
+
+		FString BatchId = AddNode(TEXT("ImageBatch"), FVector2D(300, 50));
+
+		FString GeminiId = AddNode(TEXT("GeminiNanoBanana2"), FVector2D(600, 50));
+		SetWidget(GeminiId, TEXT("model"), Settings->GeminiModelName);
+		SetWidget(GeminiId, TEXT("aspect_ratio"), Settings->GeminiAspectRatio);
+
+		FString SaveId = AddNode(TEXT("SaveImage"), FVector2D(900, 50));
+
+		AddConnection(ViewportId, 0, BatchId, TEXT("image1"));
+		AddConnection(DepthId, 0, BatchId, TEXT("image2"));
+		AddConnection(BatchId, 0, GeminiId, TEXT("images"));
+		AddConnection(GeminiId, 0, SaveId, TEXT("images"));
+		break;
 	}
 
-	FString KSamplerId = AddNodeFromDB(TEXT("KSampler"), TEXT("5"), FVector2D(600, 0));
-	if (!KSamplerId.IsEmpty())
+	case EGenMode::Kling:
 	{
-		int32* Idx = NodeIndexMap.Find(KSamplerId);
-		if (Idx)
-		{
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("steps")) = FString::FromInt(Settings->Steps);
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("cfg")) = FString::SanitizeFloat(Settings->CFGScale);
-			Nodes[*Idx].WidgetValues.FindOrAdd(TEXT("sampler_name")) = Settings->SamplerName;
-		}
-	}
+		// ---- Kling (Image 3.0) ----
+		FString ViewportId = AddNode(TEXT("LoadImage"), FVector2D(0, 0));
+		SetTitle(ViewportId, TEXT("Load Viewport"));
 
-	FString VaeDecId = AddNodeFromDB(TEXT("VAEDecode"), TEXT("6"), FVector2D(900, 0));
-	FString SaveId = AddNodeFromDB(TEXT("SaveImage"), TEXT("7"), FVector2D(1200, 0));
+		FString KlingId = AddNode(TEXT("KlingImageGenerationNode"), FVector2D(350, 0));
+		SetWidget(KlingId, TEXT("model_name"), Settings->KlingModelName);
+		SetWidget(KlingId, TEXT("aspect_ratio"), Settings->KlingAspectRatio);
 
-	// Wire up connections
-	if (!CkptId.IsEmpty())
-	{
-		AddConnection(TEXT("1"), 1, TEXT("2"), TEXT("clip"));
-		AddConnection(TEXT("1"), 1, TEXT("3"), TEXT("clip"));
-		AddConnection(TEXT("1"), 0, TEXT("5"), TEXT("model"));
+		FString SaveId = AddNode(TEXT("SaveImage"), FVector2D(700, 0));
+
+		AddConnection(ViewportId, 0, KlingId, TEXT("image"));
+		AddConnection(KlingId, 0, SaveId, TEXT("images"));
+		break;
 	}
-	AddConnection(TEXT("2"), 0, TEXT("5"), TEXT("positive"));
-	AddConnection(TEXT("3"), 0, TEXT("5"), TEXT("negative"));
-	AddConnection(TEXT("4"), 0, TEXT("5"), TEXT("latent_image"));
-	AddConnection(TEXT("5"), 0, TEXT("6"), TEXT("samples"));
-	if (!CkptId.IsEmpty())
-	{
-		AddConnection(TEXT("1"), 2, TEXT("6"), TEXT("vae"));
 	}
-	AddConnection(TEXT("6"), 0, TEXT("7"), TEXT("images"));
 
 	AutoLayout();
 }

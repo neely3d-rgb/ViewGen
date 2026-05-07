@@ -11,6 +11,39 @@
 
 UGenAISettings::UGenAISettings()
 {
+	EnsureDefaultModelPaths();
+}
+
+void UGenAISettings::EnsureDefaultModelPaths()
+{
+	auto SetDefault = [this](const FString& Key, const FString& Path)
+	{
+		if (!ModelPaths.Contains(Key))
+		{
+			ModelPaths.Add(Key, Path);
+		}
+	};
+
+	SetDefault(TEXT("Checkpoint"),    TEXT("models/checkpoints/"));
+	SetDefault(TEXT("LoRA"),          TEXT("models/loras/"));
+	SetDefault(TEXT("VAE"),           TEXT("models/vae/"));
+	SetDefault(TEXT("ControlNet"),    TEXT("models/controlnet/"));
+	SetDefault(TEXT("CLIP"),          TEXT("models/clip/"));
+	SetDefault(TEXT("CLIPVision"),    TEXT("models/clip_vision/"));
+	SetDefault(TEXT("TextEncoder"),   TEXT("models/text_encoders/"));
+	SetDefault(TEXT("UNET"),          TEXT("models/unet/ or models/diffusion_models/"));
+	SetDefault(TEXT("Upscale"),       TEXT("models/upscale_models/"));
+	SetDefault(TEXT("Embedding"),     TEXT("models/embeddings/"));
+	SetDefault(TEXT("Hypernetwork"),  TEXT("models/hypernetworks/"));
+}
+
+FString UGenAISettings::GetModelPath(const FString& Key) const
+{
+	if (const FString* Found = ModelPaths.Find(Key))
+	{
+		return *Found;
+	}
+	return FString::Printf(TEXT("models/%s/"), *Key.ToLower());
 }
 
 UGenAISettings* UGenAISettings::Get()
@@ -143,6 +176,14 @@ bool UGenAISettings::SavePreset(const FString& PresetName)
 		LoRAArray.Add(MakeShareable(new FJsonValueObject(LoRA)));
 	}
 	Root->SetArrayField(TEXT("LoRAs"), LoRAArray);
+
+	// Model Paths (ComfyUI directory hints)
+	TSharedPtr<FJsonObject> PathsObj = MakeShareable(new FJsonObject);
+	for (const auto& Pair : S->ModelPaths)
+	{
+		PathsObj->SetStringField(Pair.Key, Pair.Value);
+	}
+	Root->SetObjectField(TEXT("ModelPaths"), PathsObj);
 
 	// Serialize to string
 	FString OutputString;
@@ -315,6 +356,26 @@ bool UGenAISettings::LoadPreset(const FString& PresetName)
 			S->LoRAModels.Add(Entry);
 		}
 	}
+
+	// Model Paths (ComfyUI directory hints)
+	if (Root->HasField(TEXT("ModelPaths")))
+	{
+		const TSharedPtr<FJsonObject>& PathsObj = Root->GetObjectField(TEXT("ModelPaths"));
+		if (PathsObj.IsValid())
+		{
+			S->ModelPaths.Empty();
+			for (const auto& Pair : PathsObj->Values)
+			{
+				FString Val;
+				if (Pair.Value->TryGetString(Val))
+				{
+					S->ModelPaths.Add(Pair.Key, Val);
+				}
+			}
+		}
+	}
+	// Always ensure defaults are present for any keys missing from the preset
+	S->EnsureDefaultModelPaths();
 
 	S->SaveConfig();
 	UE_LOG(LogTemp, Log, TEXT("ViewGen: Preset loaded: %s"), *PresetName);

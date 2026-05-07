@@ -8,6 +8,9 @@ An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer a
 
 - **Viewport & Depth Capture** — Capture the editor viewport and engine depth buffer in one click, ready for img2img and ControlNet pipelines.
 - **ComfyUI Integration** — Visual node-graph workflow editor that maps directly to ComfyUI API workflows. Ships with 30+ ready-to-use workflow templates.
+- **Smart Model Detection** — Auto-detects Flux vs SD checkpoints and switches loader paths accordingly. Model dropdowns are filtered by architecture to prevent incompatible selections.
+- **Error Node Highlighting** — Failed ComfyUI nodes are highlighted in red in the graph editor with diagnostic hints pointing to the correct model directory.
+- **Model Path Tooltips** — Hover any model settings label to see its ComfyUI directory. Paths are customizable and persist in presets.
 - **Meshy 3D Generation** — Text-to-3D and image-to-3D model generation via the Meshy API, with in-editor preview.
 - **Segmentation Capture** — Object and material segmentation masks for targeted inpainting and compositing.
 - **Quick Render (Sequencer)** — One-click Movie Render Graph rendering of the active Level Sequence directly from the plugin panel.

@@ -248,6 +248,9 @@
   <li><b>Result Gallery</b> &mdash; Browse, select, and navigate generation history with thumbnail previews.</li>
   <li><b>Workflow Save/Load</b> &mdash; Save and load graph editor workflows as JSON files, including ComfyUI template import.</li>
   <li><b>Cost Estimation</b> &mdash; Shows estimated API costs in the status bar before generation starts, with user-configurable pricing tables.</li>
+  <li><b>Error Node Highlighting</b> &mdash; When a ComfyUI node fails during generation, it is highlighted in red in the graph editor for instant visual diagnosis.</li>
+  <li><b>Smart Model Detection</b> &mdash; Automatic detection of Flux vs SD checkpoints prevents common errors like loading a UNET-only model through CheckpointLoaderSimple. Checkpoint and UNET model dropdowns are filtered by architecture.</li>
+  <li><b>Model Path Tooltips</b> &mdash; Hover over any model-related settings label to see the ComfyUI directory where that model type should be placed. Paths are customizable and persist across presets.</li>
 </ul>
 
 <!-- ═══════════════ 2. INSTALLATION ═══════════════ -->
@@ -522,6 +525,13 @@
   via WebSocket. This gives you visual feedback on which stage of the pipeline is running. The Cancel
   button in the toolbar sends an interrupt signal to ComfyUI to stop the current generation.
 </p>
+<p>
+  <b>Error Node Highlighting:</b> If a node fails during execution, it is highlighted with a red glow
+  (a three-layer gradient effect) that persists after the generation stops. This makes it easy to identify
+  which node in a complex workflow caused the failure. The error message in the status bar also includes
+  diagnostic hints &mdash; for example, if a model loader node fails, the plugin suggests which ComfyUI
+  model directory to check. Error highlights are automatically cleared when you start a new generation.
+</p>
 
 <h3>Results Gallery</h3>
 <p>
@@ -707,9 +717,39 @@
   <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td>Enable Depth ControlNet</td><td>false</td><td>Use depth map as structural guide</td></tr>
-    <tr><td>ControlNet Model</td><td>control_v11f1p_sd15_depth.pth</td><td>Depth control model filename</td></tr>
+    <tr><td>Use Flux ControlNet</td><td>false</td><td>Switch to XLabs Flux ControlNet path (UNETLoader + DualCLIPLoader + VAELoader instead of CheckpointLoaderSimple)</td></tr>
+    <tr><td>UNET / Diffusion Model</td><td>flux1-dev.safetensors</td><td>Flux UNET model file. Dropdown populated from ComfyUI's UNETLoader node. Only used when Flux mode is active.</td></tr>
+    <tr><td>Checkpoint</td><td>&mdash;</td><td>Checkpoint model for SD workflows. Dropdown populated from ComfyUI. Filtered by architecture: Flux models hidden in SD mode and vice versa.</td></tr>
+    <tr><td>ControlNet Model</td><td>control_v11f1p_sd15_depth.pth</td><td>Depth control model filename. Filtered by architecture.</td></tr>
     <tr><td>ControlNet Strength</td><td>1.0</td><td>Influence strength (0.0-2.0)</td></tr>
     <tr><td>Max Depth Distance</td><td>50,000 UU</td><td>Far boundary for depth normalization (100-500,000)</td></tr>
+  </tbody>
+</table>
+<p>
+  <b>Smart Flux Detection:</b> If the Flux toggle is off but the selected checkpoint contains "flux" in its name,
+  the plugin automatically uses the split-loader path (UNETLoader + DualCLIPLoader + VAELoader) instead of
+  CheckpointLoaderSimple. This prevents the common "missing CLIP model" error when a UNET-only Flux checkpoint
+  is accidentally selected in SD mode.
+</p>
+
+<h3>Model Path Hints</h3>
+<p>
+  Each model-related settings label displays a tooltip showing the ComfyUI directory where that model type
+  should be placed (e.g., hovering over "Checkpoint" shows <code>models/checkpoints/</code>). These paths
+  are configurable via <b>Project Settings &gt; Plugins &gt; ViewGen &gt; Model Directory Paths</b> and
+  persist in presets, so non-standard ComfyUI installations can be accommodated. Default paths include:
+</p>
+<table>
+  <thead><tr><th>Model Type</th><th>Default ComfyUI Path</th></tr></thead>
+  <tbody>
+    <tr><td>Checkpoint</td><td>models/checkpoints/</td></tr>
+    <tr><td>LoRA</td><td>models/loras/</td></tr>
+    <tr><td>VAE</td><td>models/vae/</td></tr>
+    <tr><td>ControlNet</td><td>models/controlnet/</td></tr>
+    <tr><td>CLIP</td><td>models/clip/</td></tr>
+    <tr><td>UNET</td><td>models/unet/ or models/diffusion_models/</td></tr>
+    <tr><td>Upscale</td><td>models/upscale_models/</td></tr>
+    <tr><td>Embedding</td><td>models/embeddings/</td></tr>
   </tbody>
 </table>
 

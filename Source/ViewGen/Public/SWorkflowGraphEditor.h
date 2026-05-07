@@ -166,6 +166,9 @@ struct FGraphNode
 	/** Whether this node is currently executing in ComfyUI */
 	bool bIsExecuting = false;
 
+	/** Whether this node caused an execution error (shown with red glow) */
+	bool bHasError = false;
+
 	/** Whether this node can be "run to" (output/terminal node like SaveImage, PreviewImage) */
 	bool IsRunnable() const
 	{
@@ -335,6 +338,13 @@ public:
 
 	/** Clear execution highlight from all nodes */
 	void ClearExecutingNodes();
+
+	/** Highlight a node with a red error glow (by node ID or class_type).
+	 *  Searches by ID first, then by class_type if no ID match. */
+	void SetErrorNode(const FString& NodeIdOrClassType);
+
+	/** Clear error highlights from all nodes */
+	void ClearErrorNodes();
 
 	/** Set overlay text drawn in the upper-left corner of the graph (e.g. cost estimate).
 	 *  Pass empty string to clear. */

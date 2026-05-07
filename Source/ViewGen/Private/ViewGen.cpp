@@ -89,12 +89,7 @@ void FViewGenModule::RegisterMenuExtensions()
 			}
 		}
 
-		// Add menu entry under Window menu
-		UToolMenu* WindowMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Window");
-		{
-			FToolMenuSection& Section = WindowMenu->FindOrAddSection("ViewGen");
-			Section.AddMenuEntryWithCommandList(FViewGenCommands::Get().OpenPluginWindow, PluginCommands);
-		}
+		// (No Window-menu entry — ViewGen lives only under StoryTools.)
 
 		// ================================================================
 		// StoryTools — top-level menu bar entry
@@ -108,27 +103,55 @@ void FViewGenModule::RegisterMenuExtensions()
 				"StoryTools",
 				LOCTEXT("StoryToolsMenuLabel", "StoryTools"));
 
+			// Lambda: add *our* entry to a section of the StoryTools submenu. Hoisted so the
+			// same entry is registered both via the seed lambda below AND via the per-plugin
+			// dynamic section, mirroring the pattern SceneBreak / CamTracker / StyleKeeper use.
+			auto AddViewGenEntry = [](FToolMenuSection& Entries)
+			{
+				Entries.AddMenuEntry(
+					FName("OpenUEGen"),
+					LOCTEXT("OpenUEGen", "ViewGen"),
+					LOCTEXT("OpenUEGenTooltip", "AI Viewport Generator — ComfyUI workflow editor with viewport capture, video generation, and 3D asset import"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports"),
+					FExecuteAction::CreateLambda([]()
+					{
+						FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("ViewGen")));
+					})
+				);
+			};
+
+			// Always AddSubMenu — UE dedupes by name. If our call wins the race, our seed
+			// lambda runs; if another plugin's call wins, the dynamic section below ensures
+			// we still appear.
 			StorySection.AddSubMenu(
 				"StoryToolsSubMenu",
 				LOCTEXT("StoryToolsLabel", "StoryTools"),
 				LOCTEXT("StoryToolsTooltip", "Story-driven creative toolset"),
-				FNewToolMenuDelegate::CreateLambda([](UToolMenu* SubMenu)
+				FNewToolMenuDelegate::CreateLambda([AddViewGenEntry](UToolMenu* SubMenu)
 				{
-					FToolMenuSection& Section = SubMenu->FindOrAddSection("StoryToolsEntries", LOCTEXT("ToolsSection", "Tools"));
-
-					// ---- ViewGen (this plugin's own entry) ----
-					Section.AddMenuEntry(
-						FName("OpenUEGen"),
-						LOCTEXT("OpenUEGen", "ViewGen"),
-						LOCTEXT("OpenUEGenTooltip", "AI Viewport Generator — ComfyUI workflow editor with viewport capture, video generation, and 3D asset import"),
-						FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports"),
-						FExecuteAction::CreateLambda([]()
-						{
-							FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("ViewGen")));
-						})
-					);
+					FToolMenuSection& Entries = SubMenu->FindOrAddSection(
+						"StoryToolsEntries", LOCTEXT("ToolsSection", "Tools"));
+					AddViewGenEntry(Entries);
 				})
 			);
+
+			// Robust path: extend the registered submenu directly with a per-plugin dynamic
+			// section. ExtendMenu queues the extension if the menu isn't registered yet, so
+			// load order doesn't matter. Each plugin uses its own section name so we don't
+			// clobber each other.
+			if (UToolMenu* StorySubMenu = UToolMenus::Get()->ExtendMenu(
+				"LevelEditor.MainMenu.StoryToolsSubMenu"))
+			{
+				StorySubMenu->AddDynamicSection(
+					"StoryToolsEntries_ViewGen",
+					FNewToolMenuDelegate::CreateLambda([AddViewGenEntry](UToolMenu* InMenu)
+					{
+						FToolMenuSection& Entries = InMenu->FindOrAddSection(
+							"StoryToolsEntries", LOCTEXT("ToolsSection", "Tools"));
+						AddViewGenEntry(Entries);
+					})
+				);
+			}
 		}
 	}));
 }
