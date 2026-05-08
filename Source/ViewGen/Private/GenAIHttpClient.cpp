@@ -794,9 +794,19 @@ bool FGenAIHttpClient::ShouldUseFluxPath(const UGenAISettings* Settings)
 	// Auto-detect: if the selected checkpoint looks like a Flux UNET-only model,
 	// use the split-loader path to avoid the "missing CLIP" error
 	FString Lower = Settings->CheckpointName.ToLower();
-	if (Lower.Contains(TEXT("flux")))
+	if (Lower.Contains(TEXT("flux")) || Lower.Contains(TEXT("schnell"))
+		|| Lower.Contains(TEXT("dev_fp8")) || Lower.Contains(TEXT("dev-fp8")))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("ViewGen: Checkpoint '%s' looks like a Flux model but Flux mode is off — auto-switching to split-loader path (UNETLoader + DualCLIPLoader + VAELoader)"),
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen: Checkpoint '%s' looks like a Flux model — auto-switching to split-loader path"),
+			*Settings->CheckpointName);
+		return true;
+	}
+
+	// If ComfyUI reported this model in the UNETLoader list, it's a diffusion-only
+	// model that doesn't bundle CLIP — must use split-loader path
+	if (Settings->CachedUNETNames.Contains(Settings->CheckpointName))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen: Checkpoint '%s' found in UNETLoader model list — auto-switching to split-loader path"),
 			*Settings->CheckpointName);
 		return true;
 	}

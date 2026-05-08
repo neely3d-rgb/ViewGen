@@ -178,6 +178,7 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 		SelectedKlingVideoQuality = MakeShareable(new FString(Settings->KlingVideoQuality));
 	}
 
+
 	// Build the full UI
 	ChildSlot
 	[
@@ -304,315 +305,127 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 					]
 				]
 
-				// Bottom: Prompt, LoRA, Settings, Workflow Preview (scrollable)
-				// Graph editor body + toolbar are pinned below the scroll area
+				// Bottom: Sub-tab system (Generate | Graph Editor | Connection)
 				+ SSplitter::Slot()
 				.Value(0.45f)
 				[
 					SNew(SVerticalBox)
 
-					// Scrollable content area (prompt, LoRA, settings, workflow preview, graph header toggle)
-					// Hidden when graph editor is expanded so the graph body gets all available space.
-					+ SVerticalBox::Slot()
-					.FillHeight(1.0f)
-					[
-						SNew(SBox)
-						.Visibility_Lambda([this]()
-						{
-							return bGraphEditorExpanded ? EVisibility::Collapsed : EVisibility::Visible;
-						})
-						[
-							SNew(SScrollBox)
-
-						+ SScrollBox::Slot()
-						.Padding(4.0f)
-						[
-							BuildPromptPanel()
-						]
-
-						+ SScrollBox::Slot()
-						[
-							SNew(SSeparator)
-						]
-
-						+ SScrollBox::Slot()
-						.Padding(4.0f)
-						[
-							BuildLoRAPanel()
-						]
-
-						+ SScrollBox::Slot()
-						[
-							SNew(SSeparator)
-						]
-
-						+ SScrollBox::Slot()
-						.Padding(4.0f)
-						[
-							BuildSettingsPanel()
-						]
-
-						+ SScrollBox::Slot()
-						[
-							SNew(SSeparator)
-						]
-
-						+ SScrollBox::Slot()
-						.Padding(4.0f)
-						[
-							BuildGraphEditorSection()
-						]
-						]
-					]
-
-					// Graph editor toggle header — visible only when graph is expanded (scroll box is hidden)
+					// Sub-tab bar: 3 toggle buttons
 					+ SVerticalBox::Slot()
 					.AutoHeight()
-					.Padding(4.0f, 2.0f, 4.0f, 0.0f)
-					[
-						SNew(SBox)
-						.Visibility_Lambda([this]()
-						{
-							return bGraphEditorExpanded ? EVisibility::Visible : EVisibility::Collapsed;
-						})
-						[
-							BuildGraphEditorSection()
-						]
-					]
-
-					// Graph editor body — OUTSIDE the scroll box so it can fill remaining space
-					+ SVerticalBox::Slot()
-					.FillHeight(1.0f)
 					.Padding(4.0f, 2.0f)
 					[
-						SNew(SBox)
-						.Visibility_Lambda([this]()
-						{
-							return bGraphEditorExpanded ? EVisibility::Visible : EVisibility::Collapsed;
-						})
+						SNew(SHorizontalBox)
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.0f, 0.0f, 2.0f, 0.0f)
 						[
-							SNew(SSplitter)
-							.Orientation(Orient_Horizontal)
-
-							// Left: Graph canvas
-							+ SSplitter::Slot()
-							.Value(0.70f)
+							SNew(SCheckBox)
+							.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+							.IsChecked_Lambda([this]()
+							{
+								return ActiveSubTabIndex == 0 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+							{
+								ActiveSubTabIndex = 0;
+								if (SubTabSwitcher.IsValid()) SubTabSwitcher->SetActiveWidgetIndex(0);
+							})
+							.Padding(FMargin(8.0f, 4.0f))
 							[
-								SAssignNew(GraphEditorInlineContainer, SBorder)
-								.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-								.BorderBackgroundColor(FLinearColor(0.05f, 0.05f, 0.06f))
-								.Padding(0.0f)
-								[
-									SAssignNew(GraphEditor, SWorkflowGraphEditor)
-									.OnGraphChanged_Lambda([this]()
-									{
-										RebuildNodeDetailsPanel();
-
-										// Debounced auto-save: wait 2 seconds after last change before saving
-										if (GEditor)
-										{
-											GEditor->GetTimerManager()->ClearTimer(AutoSaveTimer);
-											GEditor->GetTimerManager()->SetTimer(AutoSaveTimer, FTimerDelegate::CreateLambda([this]()
-											{
-												AutoSaveGraph();
-											}), 2.0f, false);
-										}
-									})
-									.OnSelectionChanged_Lambda([this]()
-									{
-										OnGraphSelectionChanged();
-									})
-									.OnRunToNode_Lambda([this](const FString& NodeId)
-									{
-										OnRunToNodeRequested(NodeId);
-									})
-								]
+								SNew(STextBlock)
+								.Text(LOCTEXT("GenerateSubTab", "Generate"))
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
 							]
+						]
 
-							// Right: Node details panel
-							+ SSplitter::Slot()
-							.Value(0.30f)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+						[
+							SNew(SCheckBox)
+							.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+							.IsChecked_Lambda([this]()
+							{
+								return ActiveSubTabIndex == 1 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+							{
+								ActiveSubTabIndex = 1;
+								if (SubTabSwitcher.IsValid()) SubTabSwitcher->SetActiveWidgetIndex(1);
+
+								// Auto-initialize graph if empty
+								if (GraphEditor.IsValid() && GraphEditor->GetNodes().Num() == 0)
+								{
+									if (!RestoreLastGraph())
+									{
+										GraphEditor->BuildPresetGraph();
+									}
+									RefreshLoadImageThumbnails();
+								}
+							})
+							.Padding(FMargin(8.0f, 4.0f))
 							[
-								SNew(SBorder)
-								.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-								.BorderBackgroundColor(FLinearColor(0.09f, 0.09f, 0.10f))
-								.Padding(4.0f)
-								[
-									SAssignNew(NodeDetailsPanel, SScrollBox)
-								]
+								SNew(STextBlock)
+								.Text(LOCTEXT("GraphEditorSubTab", "Graph Editor"))
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+							]
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SCheckBox)
+							.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+							.IsChecked_Lambda([this]()
+							{
+								return ActiveSubTabIndex == 2 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+							{
+								ActiveSubTabIndex = 2;
+								if (SubTabSwitcher.IsValid()) SubTabSwitcher->SetActiveWidgetIndex(2);
+							})
+							.Padding(FMargin(8.0f, 4.0f))
+							[
+								SNew(STextBlock)
+								.Text(LOCTEXT("ConnectionSubTab", "Connection"))
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
 							]
 						]
 					]
 
-					// Graph editor toolbar — pinned to the bottom, always visible when graph is expanded
 					+ SVerticalBox::Slot()
 					.AutoHeight()
-					.Padding(4.0f, 4.0f, 4.0f, 2.0f)
 					[
-						SNew(SBox)
-						.Visibility_Lambda([this]()
-						{
-							return bGraphEditorExpanded ? EVisibility::Visible : EVisibility::Collapsed;
-						})
+						SNew(SSeparator)
+					]
+
+					// Sub-tab content switcher
+					+ SVerticalBox::Slot()
+					.FillHeight(1.0f)
+					[
+						SAssignNew(SubTabSwitcher, SWidgetSwitcher)
+						.WidgetIndex(0)
+
+						// Tab 0: Generate
+						+ SWidgetSwitcher::Slot()
 						[
-							SNew(SHorizontalBox)
+							BuildGenerateTab()
+						]
 
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Generate from Graph")))
-								.ToolTipText(FText::FromString(TEXT("Submit the current node graph directly to ComfyUI for generation")))
-								.OnClicked(this, &SViewGenPanel::OnGenerateFromGraphClicked)
-								.IsEnabled_Lambda([this]()
-								{
-									return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0
-										&& HttpClient.IsValid() && !HttpClient->IsRequestInProgress();
-								})
-							]
+						// Tab 1: Graph Editor
+						+ SWidgetSwitcher::Slot()
+						[
+							BuildGraphEditorTab()
+						]
 
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Cancel")))
-								.ToolTipText(FText::FromString(TEXT("Cancel the current generation and interrupt ComfyUI")))
-								.OnClicked(this, &SViewGenPanel::OnCancelClicked)
-								.IsEnabled_Lambda([this]() { return bIsGenerating; })
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Auto-Layout")))
-								.ToolTipText(FText::FromString(TEXT("Automatically arrange nodes left-to-right (Ctrl+L)")))
-								.OnClicked_Lambda([this]() -> FReply
-								{
-									if (GraphEditor.IsValid())
-									{
-										GraphEditor->AutoLayout();
-									}
-									return FReply::Handled();
-								})
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Reset Graph")))
-								.ToolTipText(FText::FromString(TEXT("Rebuild the graph from current settings")))
-								.OnClicked_Lambda([this]() -> FReply
-								{
-									if (GraphEditor.IsValid())
-									{
-										GraphEditor->BuildPresetGraph();
-										RefreshLoadImageThumbnails();
-									}
-									return FReply::Handled();
-								})
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Clear")))
-								.ToolTipText(FText::FromString(TEXT("Remove all nodes from the graph")))
-								.OnClicked_Lambda([this]() -> FReply
-								{
-									if (GraphEditor.IsValid())
-									{
-										GraphEditor->ClearGraph();
-									}
-									return FReply::Handled();
-								})
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(8.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SSeparator)
-								.Orientation(Orient_Vertical)
-								.SeparatorImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-								.ColorAndOpacity(FLinearColor(0.3f, 0.3f, 0.3f, 0.3f))
-								.Thickness(1.0f)
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text_Lambda([this]() -> FText
-								{
-									if (GraphEditor.IsValid() && GraphEditor->IsDirty())
-									{
-										return FText::FromString(TEXT("Save*"));
-									}
-									return FText::FromString(TEXT("Save"));
-								})
-								.ToolTipText_Lambda([this]() -> FText
-								{
-									if (GraphEditor.IsValid() && !GraphEditor->GetCurrentFilePath().IsEmpty())
-									{
-										return FText::FromString(FString::Printf(TEXT("Save to %s"),
-											*FPaths::GetCleanFilename(GraphEditor->GetCurrentFilePath())));
-									}
-									return FText::FromString(TEXT("Save the current workflow graph to a file"));
-								})
-								.OnClicked(this, &SViewGenPanel::OnSaveGraphClicked)
-								.IsEnabled_Lambda([this]()
-								{
-									return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0;
-								})
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Save As")))
-								.ToolTipText(FText::FromString(TEXT("Save the workflow graph to a new file")))
-								.OnClicked(this, &SViewGenPanel::OnSaveGraphAsClicked)
-								.IsEnabled_Lambda([this]()
-								{
-									return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0;
-								})
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Load")))
-								.ToolTipText(FText::FromString(TEXT("Load a previously saved workflow graph from a file")))
-								.OnClicked(this, &SViewGenPanel::OnLoadGraphClicked)
-							]
-
-							+ SHorizontalBox::Slot()
-							.FillWidth(1.0f)
-							[
-								SNullWidget::NullWidget
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SButton)
-								.Text(FText::FromString(TEXT("Fullscreen")))
-								.ToolTipText(FText::FromString(TEXT("Open the graph editor in a fullscreen window")))
-								.OnClicked(this, &SViewGenPanel::OnGraphEditorFullscreen)
-							]
+						// Tab 2: Connection
+						+ SWidgetSwitcher::Slot()
+						[
+							BuildConnectionTab()
 						]
 					]
 				]
@@ -1397,6 +1210,1756 @@ TSharedRef<SWidget> SViewGenPanel::BuildLoRAPanel()
 }
 
 // ============================================================================
+// Generate Tab (Image Generation subtab)
+// ============================================================================
+
+TSharedRef<SWidget> SViewGenPanel::BuildGenerateTab()
+{
+	UGenAISettings* Settings = UGenAISettings::Get();
+
+	// Reference Adherence slider will be at the top
+	auto ReferenceAdherenceSlider = SNew(SSlider)
+		.Style(FAppStyle::Get(), "Slider")
+		.Value_Lambda([this]() { return UGenAISettings::Get()->ReferenceAdherence; })
+		.OnValueChanged_Lambda([this](float NewVal)
+		{
+			UGenAISettings::Get()->ReferenceAdherence = NewVal;
+			ApplyAdherenceToSettings(NewVal);
+		})
+		.ToolTipText(LOCTEXT("ReferenceAdherenceTip",
+			"How closely the output should match the input image:\n"
+			"Low (0.0) = creative freedom\n"
+			"High (1.0) = faithful to input"));
+
+	return SNew(SScrollBox)
+
+		+ SScrollBox::Slot()
+		.Padding(4.0f)
+		[
+			SNew(SVerticalBox)
+
+			// Prompt panel
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				BuildPromptPanel()
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// LoRA panel
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				BuildLoRAPanel()
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Model section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 4.0f)
+			[
+				SNew(SVerticalBox)
+
+				// Mode dropdown
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					MakeSettingsRow(
+						LOCTEXT("GenModeLabel", "Mode"),
+						SAssignNew(GenModeCombo, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&GenModeOptions)
+						.InitiallySelectedItem(SelectedGenMode)
+						.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+						{
+							if (NewValue.IsValid())
+							{
+								SelectedGenMode = NewValue;
+								int32 Index = GenModeOptions.IndexOfByKey(NewValue);
+								if (Index != INDEX_NONE)
+								{
+									UGenAISettings::Get()->GenerationMode = static_cast<EGenMode>(Index);
+									ApplySettingsToConfig();
+								}
+							}
+						})
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+						{
+							return SNew(STextBlock)
+								.Text(FText::FromString(*Item))
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+						})
+						.Content()
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]()
+							{
+								return SelectedGenMode.IsValid()
+									? FText::FromString(*SelectedGenMode)
+									: FText::FromString(TEXT("img2img (Viewport + Prompt)"));
+							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						]
+					)
+				]
+
+				// Checkpoint dropdown
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("CheckpointLabel", "Checkpoint"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("Checkpoint")))),
+							SAssignNew(CheckpointCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&CheckpointOptions)
+							.InitiallySelectedItem(SelectedCheckpoint)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedCheckpoint = NewValue;
+									UGenAISettings::Get()->CheckpointName = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedCheckpoint.IsValid()
+										? FText::FromString(*SelectedCheckpoint)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("RefreshModels", "Refresh"))
+						.ToolTipText(LOCTEXT("RefreshModelsTooltip", "Re-fetch available models from ComfyUI"))
+						.OnClicked_Lambda([this]() -> FReply
+						{
+							FetchAndPopulateModels();
+							return FReply::Handled();
+						})
+					]
+				]
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Generation section (Reference Adherence slider + main controls)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 4.0f)
+			[
+				SNew(SVerticalBox)
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					MakeSettingsRow(
+						LOCTEXT("ReferenceAdherenceLabel", "Reference Adherence"),
+						SNew(SBox)
+						.Padding(FMargin(0.0f, 2.0f))
+						[
+							ReferenceAdherenceSlider
+						]
+					)
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					MakeSettingsRow(
+						LOCTEXT("WidthLabel", "Output Width"),
+						SNew(SSpinBox<int32>)
+						.MinValue(64)
+						.MaxValue(2048)
+						.Delta(64)
+						.Value_Lambda([this]() { return UGenAISettings::Get()->OutputWidth; })
+						.OnValueChanged_Lambda([this](int32 NewVal)
+						{
+							UGenAISettings::Get()->OutputWidth = NewVal;
+						})
+						.OnValueCommitted_Lambda([this](int32 NewVal, ETextCommit::Type)
+						{
+							UGenAISettings::Get()->OutputWidth = NewVal;
+							ApplySettingsToConfig();
+						})
+					)
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					MakeSettingsRow(
+						LOCTEXT("HeightLabel", "Output Height"),
+						SNew(SSpinBox<int32>)
+						.MinValue(64)
+						.MaxValue(2048)
+						.Delta(64)
+						.Value_Lambda([this]() { return UGenAISettings::Get()->OutputHeight; })
+						.OnValueChanged_Lambda([this](int32 NewVal)
+						{
+							UGenAISettings::Get()->OutputHeight = NewVal;
+						})
+						.OnValueCommitted_Lambda([this](int32 NewVal, ETextCommit::Type)
+						{
+							UGenAISettings::Get()->OutputHeight = NewVal;
+							ApplySettingsToConfig();
+						})
+					)
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					MakeSettingsRow(
+						LOCTEXT("StepsLabel", "Steps"),
+						SNew(SSpinBox<int32>)
+						.MinValue(1)
+						.MaxValue(150)
+						.Value_Lambda([this]() { return UGenAISettings::Get()->Steps; })
+						.OnValueChanged_Lambda([this](int32 NewVal)
+						{
+							UGenAISettings::Get()->Steps = NewVal;
+						})
+						.OnValueCommitted_Lambda([this](int32 NewVal, ETextCommit::Type)
+						{
+							UGenAISettings::Get()->Steps = NewVal;
+							ApplySettingsToConfig();
+						})
+					)
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f)
+				[
+					MakeSettingsRow(
+						LOCTEXT("SeedLabel", "Seed (0=random)"),
+						SNew(SSpinBox<int32>)
+						.MinValue(0)
+						.MaxValue(2147483647)
+						.Value_Lambda([this]() { return static_cast<int32>(UGenAISettings::Get()->Seed); })
+						.OnValueChanged_Lambda([this](int32 NewVal)
+						{
+							UGenAISettings::Get()->Seed = static_cast<int64>(NewVal);
+						})
+						.OnValueCommitted_Lambda([this](int32 NewVal, ETextCommit::Type)
+						{
+							UGenAISettings::Get()->Seed = static_cast<int64>(NewVal);
+							ApplySettingsToConfig();
+						})
+					)
+				]
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Mode-specific sections (Gemini, Kling) — shown/hidden based on GenerationMode
+			// Gemini section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f)
+			.Visibility_Lambda([this]()
+			{
+				return UGenAISettings::Get()->GenerationMode == EGenMode::Gemini
+					? EVisibility::Visible : EVisibility::Collapsed;
+			})
+			[
+				BuildCollapsibleSection(
+					LOCTEXT("GeminiSection", "Gemini (Nano Banana 2)"),
+					bGeminiExpanded,
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("GeminiModelLabel", "Model"),
+							SAssignNew(GeminiModelCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&GeminiModelOptions)
+							.InitiallySelectedItem(SelectedGeminiModel)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedGeminiModel = NewValue;
+									UGenAISettings::Get()->GeminiModelName = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedGeminiModel.IsValid()
+										? FText::FromString(*SelectedGeminiModel)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("GeminiAspectLabel", "Aspect Ratio"),
+							SAssignNew(GeminiAspectCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&GeminiAspectOptions)
+							.InitiallySelectedItem(SelectedGeminiAspect)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedGeminiAspect = NewValue;
+									UGenAISettings::Get()->GeminiAspectRatio = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedGeminiAspect.IsValid()
+										? FText::FromString(*SelectedGeminiAspect)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("GeminiResLabel", "Resolution"),
+							SAssignNew(GeminiResolutionCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&GeminiResolutionOptions)
+							.InitiallySelectedItem(SelectedGeminiResolution)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedGeminiResolution = NewValue;
+									UGenAISettings::Get()->GeminiResolution = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedGeminiResolution.IsValid()
+										? FText::FromString(*SelectedGeminiResolution)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("GeminiModalitiesLabel", "Response Modalities"),
+							SAssignNew(GeminiModalityCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&GeminiModalityOptions)
+							.InitiallySelectedItem(SelectedGeminiModality)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedGeminiModality = NewValue;
+									UGenAISettings::Get()->GeminiResponseModalities = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedGeminiModality.IsValid()
+										? FText::FromString(*SelectedGeminiModality)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("GeminiThinkingLabel", "Thinking Level"),
+							SAssignNew(GeminiThinkingCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&GeminiThinkingOptions)
+							.InitiallySelectedItem(SelectedGeminiThinking)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedGeminiThinking = NewValue;
+									UGenAISettings::Get()->GeminiThinkingLevel = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedGeminiThinking.IsValid()
+										? FText::FromString(*SelectedGeminiThinking)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+				)
+			]
+
+			// Kling section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f)
+			.Visibility_Lambda([this]()
+			{
+				return UGenAISettings::Get()->GenerationMode == EGenMode::Kling
+					? EVisibility::Visible : EVisibility::Collapsed;
+			})
+			[
+				BuildCollapsibleSection(
+					LOCTEXT("KlingSection", "Kling (Image 3.0)"),
+					bKlingExpanded,
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("KlingModelLabel", "Model"),
+							SAssignNew(KlingModelCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&KlingModelOptions)
+							.InitiallySelectedItem(SelectedKlingModel)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewVal, ESelectInfo::Type) {
+								if (NewVal.IsValid()) {
+									SelectedKlingModel = NewVal;
+									UGenAISettings::Get()->KlingModelName = *NewVal;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget> {
+								return SNew(STextBlock).Text(FText::FromString(*Item));
+							})
+							[
+								SNew(STextBlock).Text_Lambda([this]() {
+									return SelectedKlingModel.IsValid() ? FText::FromString(*SelectedKlingModel) : FText::GetEmpty();
+								})
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("KlingAspectLabel", "Aspect Ratio"),
+							SAssignNew(KlingAspectCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&KlingAspectOptions)
+							.InitiallySelectedItem(SelectedKlingAspect)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewVal, ESelectInfo::Type) {
+								if (NewVal.IsValid()) {
+									SelectedKlingAspect = NewVal;
+									UGenAISettings::Get()->KlingAspectRatio = *NewVal;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget> {
+								return SNew(STextBlock).Text(FText::FromString(*Item));
+							})
+							[
+								SNew(STextBlock).Text_Lambda([this]() {
+									return SelectedKlingAspect.IsValid() ? FText::FromString(*SelectedKlingAspect) : FText::GetEmpty();
+								})
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("KlingImageFidelityLabel", "Image Fidelity (0-1)"),
+							SNew(SSpinBox<float>)
+							.MinValue(0.0f)
+							.MaxValue(1.0f)
+							.Delta(0.01f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->KlingImageFidelity; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->KlingImageFidelity = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->KlingImageFidelity = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+				)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Generate button
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(4.0f)
+			[
+				SNew(SButton)
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				.ContentPadding(FMargin(20.0f, 10.0f))
+				.Text(LOCTEXT("GenerateBtn", "Generate"))
+				.ToolTipText(LOCTEXT("GenerateTip", "Send captured images and prompt to the AI backend"))
+				.OnClicked(this, &SViewGenPanel::OnGenerateClicked)
+				.IsEnabled_Lambda([this]()
+				{
+					if (bIsGenerating) return false;
+					const EGenMode Mode = UGenAISettings::Get()->GenerationMode;
+					switch (Mode)
+					{
+					case EGenMode::Img2Img:
+						return ViewportCapture->HasCapture();
+					case EGenMode::DepthAndPrompt:
+						return DepthRenderer->HasCapture();
+					case EGenMode::PromptOnly:
+					case EGenMode::Gemini:
+					case EGenMode::Kling:
+						return true;
+					default:
+						return ViewportCapture->HasCapture();
+					}
+				})
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Advanced settings (collapsible)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "NoBorder")
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					bAdvancedSettingsExpanded = !bAdvancedSettingsExpanded;
+					return FReply::Handled();
+				})
+				.Content()
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this]()
+						{
+							return bAdvancedSettingsExpanded
+								? FText::FromString(TEXT("\x25BC"))
+								: FText::FromString(TEXT("\x25B6"));
+						})
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("AdvancedHeader", "Advanced Settings"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+					]
+				]
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(8.0f, 4.0f, 0.0f, 0.0f)
+			[
+				SNew(SBox)
+				.Visibility_Lambda([this]()
+				{
+					return bAdvancedSettingsExpanded ? EVisibility::Visible : EVisibility::Collapsed;
+				})
+				[
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("DenoiseLabel", "Denoising Strength"),
+							SNew(SSpinBox<float>)
+							.MinValue(0.0f)
+							.MaxValue(1.0f)
+							.Delta(0.05f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->DenoisingStrength; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->DenoisingStrength = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->DenoisingStrength = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("CFGLabel", "CFG Scale"),
+							SNew(SSpinBox<float>)
+							.MinValue(1.0f)
+							.MaxValue(30.0f)
+							.Delta(0.5f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->CFGScale; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->CFGScale = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->CFGScale = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("SamplerLabel", "Sampler"),
+							LOCTEXT("SamplerTip", "Sampling algorithm used by KSampler (built-in, no model file needed)"),
+							SNew(SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&SamplerOptions)
+							.InitiallySelectedItem(SelectedSampler)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedSampler = NewValue;
+									UGenAISettings::Get()->SamplerName = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedSampler.IsValid()
+										? FText::FromString(*SelectedSampler)
+										: FText::FromString(TEXT("euler_ancestral"));
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("SchedulerLabel", "Scheduler"),
+							LOCTEXT("SchedulerTip", "Noise schedule used by KSampler (built-in, no model file needed)"),
+							SNew(SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&SchedulerOptions)
+							.InitiallySelectedItem(SelectedScheduler)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedScheduler = NewValue;
+									UGenAISettings::Get()->SchedulerName = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedScheduler.IsValid()
+										? FText::FromString(*SelectedScheduler)
+										: FText::FromString(TEXT("normal"));
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 4.0f, 0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("AutoCameraPromptLabel", "Auto Camera Prompt"),
+							SNew(SCheckBox)
+							.IsChecked_Lambda([](
+								)
+							{
+								return UGenAISettings::Get()->bAutoCameraPrompt
+									? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+							{
+								UGenAISettings::Get()->bAutoCameraPrompt = (NewState == ECheckBoxState::Checked);
+								ApplySettingsToConfig();
+							})
+							.ToolTipText(LOCTEXT("AutoCameraPromptTip",
+								"Automatically prepend camera lens and framing info to the prompt\n"
+								"based on the viewport camera at capture time (FOV, angle, height)."))
+						)
+					]
+				]
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Depth / ControlNet (collapsible)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f)
+			[
+				BuildCollapsibleSection(
+					LOCTEXT("DepthSection", "Depth / ControlNet"),
+					bDepthExpanded,
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("EnableDepthLabel", "Enable Depth ControlNet"),
+							SNew(SCheckBox)
+							.IsChecked_Lambda([this]()
+							{
+								return UGenAISettings::Get()->bEnableDepthControlNet
+									? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+							{
+								UGenAISettings::Get()->bEnableDepthControlNet = (NewState == ECheckBoxState::Checked);
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("UseFluxCNLabel", "Use Flux ControlNet (XLabs)"),
+							SNew(SCheckBox)
+							.IsChecked_Lambda([this]()
+							{
+								return UGenAISettings::Get()->bUseFluxControlNet
+									? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+							{
+								UGenAISettings::Get()->bUseFluxControlNet = (NewState == ECheckBoxState::Checked);
+								ApplySettingsToConfig();
+								FilterModelsForCurrentMode();
+							})
+							.ToolTipText(LOCTEXT("UseFluxCNTip",
+								"Enable for Flux models with XLabs ControlNet.\n"
+								"Requires x-flux-comfyui custom nodes installed in ComfyUI.\n"
+								"Uses LoadFluxControlNet + ApplyFluxControlNet + XlabsSampler."))
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("UNETModelLabel", "UNET / Diffusion Model"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("UNET")))),
+							SAssignNew(UNETModelCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&UNETModelOptions)
+							.InitiallySelectedItem(SelectedUNETModel)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedUNETModel = NewValue;
+									UGenAISettings::Get()->FluxModelName = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.ToolTipText(LOCTEXT("UNETModelTip",
+								"Flux UNET / diffusion model file — populated from ComfyUI's UNETLoader node"))
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedUNETModel.IsValid()
+										? FText::FromString(*SelectedUNETModel)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("ControlNetModelLabel", "ControlNet Model"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("ControlNet")))),
+							SAssignNew(ControlNetCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&ControlNetOptions)
+							.InitiallySelectedItem(SelectedControlNet)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type)
+							{
+								if (NewValue.IsValid())
+								{
+									SelectedControlNet = NewValue;
+									UGenAISettings::Get()->ControlNetModel = *NewValue;
+									ApplySettingsToConfig();
+								}
+							})
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+							})
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									return SelectedControlNet.IsValid()
+										? FText::FromString(*SelectedControlNet)
+										: FText::GetEmpty();
+								})
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+							]
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("ControlNetStrengthLabel", "ControlNet Strength"),
+							LOCTEXT("ControlNetStrengthTip", "How strongly the depth map influences generation (0.0 = ignored, 1.0 = full influence)"),
+							SNew(SSpinBox<float>)
+							.MinValue(0.0f)
+							.MaxValue(2.0f)
+							.Delta(0.05f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->ControlNetWeight; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->ControlNetWeight = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->ControlNetWeight = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("MaxDepthLabel", "Max Depth Distance (UU)"),
+							SNew(SSpinBox<float>)
+							.MinValue(100.0f)
+							.MaxValue(500000.0f)
+							.Delta(1000.0f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->MaxDepthDistance; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->MaxDepthDistance = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->MaxDepthDistance = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+				)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Hi-Res Fix (collapsible)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f)
+			[
+				BuildCollapsibleSection(
+					LOCTEXT("HiResSection", "Hi-Res Fix"),
+					bHiResExpanded,
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("EnableHiResLabel", "Enable Hi-Res Fix"),
+							SNew(SCheckBox)
+							.IsChecked_Lambda([this]()
+							{
+								return UGenAISettings::Get()->bEnableHiResFix
+									? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+							{
+								UGenAISettings::Get()->bEnableHiResFix = (NewState == ECheckBoxState::Checked);
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("HiResUpscaleLabel", "Upscale Factor"),
+							SNew(SSpinBox<float>)
+							.MinValue(1.0f)
+							.MaxValue(4.0f)
+							.Delta(0.25f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->HiResUpscaleFactor; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->HiResUpscaleFactor = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->HiResUpscaleFactor = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("HiResDenoiseLabel", "Hi-Res Denoise"),
+							SNew(SSpinBox<float>)
+							.MinValue(0.0f)
+							.MaxValue(1.0f)
+							.Delta(0.05f)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->HiResDenoise; })
+							.OnValueChanged_Lambda([this](float NewVal)
+							{
+								UGenAISettings::Get()->HiResDenoise = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->HiResDenoise = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("HiResStepsLabel", "Hi-Res Steps"),
+							SNew(SSpinBox<int32>)
+							.MinValue(1)
+							.MaxValue(150)
+							.Value_Lambda([this]() { return UGenAISettings::Get()->HiResSteps; })
+							.OnValueChanged_Lambda([this](int32 NewVal)
+							{
+								UGenAISettings::Get()->HiResSteps = NewVal;
+							})
+							.OnValueCommitted_Lambda([this](int32 NewVal, ETextCommit::Type)
+							{
+								UGenAISettings::Get()->HiResSteps = NewVal;
+								ApplySettingsToConfig();
+							})
+						)
+					]
+				)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Defaults button
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(4.0f)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("ResetDefaults", "Reset to Defaults"))
+				.ToolTipText(LOCTEXT("ResetDefaultsTip", "Reset all settings to their default values"))
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					ResetSettingsToDefaults();
+					return FReply::Handled();
+				})
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Presets row
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(4.0f)
+			[
+				SNew(SHorizontalBox)
+
+				// Preset dropdown
+				+ SHorizontalBox::Slot()
+				.FillWidth(0.4f)
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+				[
+					SAssignNew(PresetCombo, SComboBox<TSharedPtr<FString>>)
+					.OptionsSource(&PresetOptions)
+					.OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewValue, ESelectInfo::Type SelectType)
+					{
+						SelectedPreset = NewValue;
+						if (NewValue.IsValid() && PresetNameInput.IsValid())
+						{
+							PresetNameInput->SetText(FText::FromString(*NewValue));
+						}
+						if (SelectType != ESelectInfo::Direct && NewValue.IsValid() && !NewValue->IsEmpty())
+						{
+							LoadSelectedPreset();
+						}
+					})
+					.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+					{
+						return SNew(STextBlock)
+							.Text(FText::FromString(*Item))
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+					})
+					.Content()
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this]() -> FText
+						{
+							return SelectedPreset.IsValid()
+								? FText::FromString(*SelectedPreset)
+								: LOCTEXT("NoPreset", "Select preset...");
+						})
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+					]
+				]
+
+				// Preset name text input
+				+ SHorizontalBox::Slot()
+				.FillWidth(0.35f)
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+				[
+					SAssignNew(PresetNameInput, SEditableTextBox)
+					.HintText(LOCTEXT("PresetNameHint", "Preset name..."))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				]
+
+				// Save button
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("SavePreset", "Save"))
+					.ToolTipText(LOCTEXT("SavePresetTip", "Save current settings as a preset"))
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						SaveCurrentPreset();
+						return FReply::Handled();
+					})
+				]
+
+				// Load button
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("LoadPreset", "Load"))
+					.ToolTipText(LOCTEXT("LoadPresetTip", "Load the selected preset"))
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						LoadSelectedPreset();
+						return FReply::Handled();
+					})
+					.IsEnabled_Lambda([this]() -> bool
+					{
+						return SelectedPreset.IsValid() && !SelectedPreset->IsEmpty();
+					})
+				]
+
+				// Delete button
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("DeletePreset", "Del"))
+					.ToolTipText(LOCTEXT("DeletePresetTip", "Delete the selected preset"))
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						DeleteSelectedPreset();
+						return FReply::Handled();
+					})
+					.IsEnabled_Lambda([this]() -> bool
+					{
+						return SelectedPreset.IsValid() && !SelectedPreset->IsEmpty();
+					})
+				]
+			]
+		];
+}
+
+// ============================================================================
+// Graph Editor Tab
+// ============================================================================
+
+TSharedRef<SWidget> SViewGenPanel::BuildGraphEditorTab()
+{
+	return SNew(SVerticalBox)
+
+		// Graph editor body (horizontal splitter: canvas + details panel)
+		+ SVerticalBox::Slot()
+		.FillHeight(1.0f)
+		[
+			SNew(SSplitter)
+			.Orientation(Orient_Horizontal)
+
+			// Left: Graph canvas
+			+ SSplitter::Slot()
+			.Value(0.70f)
+			[
+				SAssignNew(GraphEditorInlineContainer, SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+				.BorderBackgroundColor(FLinearColor(0.05f, 0.05f, 0.06f))
+				.Padding(0.0f)
+				[
+					SAssignNew(GraphEditor, SWorkflowGraphEditor)
+					.OnGraphChanged_Lambda([this]()
+					{
+						RebuildNodeDetailsPanel();
+
+						// Debounced auto-save: wait 2 seconds after last change before saving
+						if (GEditor)
+						{
+							GEditor->GetTimerManager()->ClearTimer(AutoSaveTimer);
+							GEditor->GetTimerManager()->SetTimer(AutoSaveTimer, FTimerDelegate::CreateLambda([this]()
+							{
+								AutoSaveGraph();
+							}), 2.0f, false);
+						}
+					})
+					.OnSelectionChanged_Lambda([this]()
+					{
+						OnGraphSelectionChanged();
+					})
+					.OnRunToNode_Lambda([this](const FString& NodeId)
+					{
+						OnRunToNodeRequested(NodeId);
+					})
+				]
+			]
+
+			// Right: Node details panel
+			+ SSplitter::Slot()
+			.Value(0.30f)
+			[
+				SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+				.BorderBackgroundColor(FLinearColor(0.09f, 0.09f, 0.10f))
+				.Padding(4.0f)
+				[
+					SAssignNew(NodeDetailsPanel, SScrollBox)
+				]
+			]
+		]
+
+		// Graph editor toolbar — pinned to the bottom
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(4.0f, 4.0f, 4.0f, 2.0f)
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Generate from Graph")))
+				.ToolTipText(FText::FromString(TEXT("Submit the current node graph directly to ComfyUI for generation")))
+				.OnClicked(this, &SViewGenPanel::OnGenerateFromGraphClicked)
+				.IsEnabled_Lambda([this]()
+				{
+					return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0
+						&& HttpClient.IsValid() && !HttpClient->IsRequestInProgress();
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Cancel")))
+				.ToolTipText(FText::FromString(TEXT("Cancel the current generation and interrupt ComfyUI")))
+				.OnClicked(this, &SViewGenPanel::OnCancelClicked)
+				.IsEnabled_Lambda([this]() { return bIsGenerating; })
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Auto-Layout")))
+				.ToolTipText(FText::FromString(TEXT("Automatically arrange nodes left-to-right (Ctrl+L)")))
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					if (GraphEditor.IsValid())
+					{
+						GraphEditor->AutoLayout();
+					}
+					return FReply::Handled();
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Reset Graph")))
+				.ToolTipText(FText::FromString(TEXT("Rebuild the graph from current settings")))
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					if (GraphEditor.IsValid())
+					{
+						GraphEditor->BuildPresetGraph();
+						RefreshLoadImageThumbnails();
+					}
+					return FReply::Handled();
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Clear")))
+				.ToolTipText(FText::FromString(TEXT("Remove all nodes from the graph")))
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					if (GraphEditor.IsValid())
+					{
+						GraphEditor->ClearGraph();
+					}
+					return FReply::Handled();
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(8.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SSeparator)
+				.Orientation(Orient_Vertical)
+				.SeparatorImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+				.ColorAndOpacity(FLinearColor(0.3f, 0.3f, 0.3f, 0.3f))
+				.Thickness(1.0f)
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text_Lambda([this]() -> FText
+				{
+					if (GraphEditor.IsValid() && GraphEditor->IsDirty())
+					{
+						return FText::FromString(TEXT("Save*"));
+					}
+					return FText::FromString(TEXT("Save"));
+				})
+				.ToolTipText_Lambda([this]() -> FText
+				{
+					if (GraphEditor.IsValid() && !GraphEditor->GetCurrentFilePath().IsEmpty())
+					{
+						return FText::FromString(FString::Printf(TEXT("Save to %s"),
+							*FPaths::GetCleanFilename(GraphEditor->GetCurrentFilePath())));
+					}
+					return FText::FromString(TEXT("Save the current workflow graph to a file"));
+				})
+				.OnClicked(this, &SViewGenPanel::OnSaveGraphClicked)
+				.IsEnabled_Lambda([this]()
+				{
+					return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0;
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Save As")))
+				.ToolTipText(FText::FromString(TEXT("Save the workflow graph to a new file")))
+				.OnClicked(this, &SViewGenPanel::OnSaveGraphAsClicked)
+				.IsEnabled_Lambda([this]()
+				{
+					return GraphEditor.IsValid() && GraphEditor->GetNodes().Num() > 0;
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Load")))
+				.ToolTipText(FText::FromString(TEXT("Load a previously saved workflow graph from a file")))
+				.OnClicked(this, &SViewGenPanel::OnLoadGraphClicked)
+			]
+
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				SNullWidget::NullWidget
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("Fullscreen")))
+				.ToolTipText(FText::FromString(TEXT("Open the graph editor in a fullscreen window")))
+				.OnClicked(this, &SViewGenPanel::OnGraphEditorFullscreen)
+			]
+		];
+}
+
+// ============================================================================
+// Connection Tab
+// ============================================================================
+
+TSharedRef<SWidget> SViewGenPanel::BuildConnectionTab()
+{
+	UGenAISettings* Settings = UGenAISettings::Get();
+
+	return SNew(SScrollBox)
+
+		+ SScrollBox::Slot()
+		.Padding(4.0f)
+		[
+			SNew(SVerticalBox)
+
+			// ComfyUI URL
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 1.0f)
+			[
+				MakeSettingsRow(
+					LOCTEXT("ComfyURLLabel", "ComfyUI URL"),
+					SAssignNew(ComfyUIURLInput, SEditableTextBox)
+					.Text(FText::FromString(Settings->APIEndpointURL))
+					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
+					{
+						UGenAISettings::Get()->APIEndpointURL = NewText.ToString();
+						ApplySettingsToConfig();
+					})
+				)
+			]
+
+			// ComfyUI API Key
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 1.0f)
+			[
+				MakeSettingsRow(
+					LOCTEXT("ApiKeyLabel", "ComfyUI API Key"),
+					SAssignNew(ComfyUIApiKeyInput, SEditableTextBox)
+					.Text(FText::FromString(Settings->ComfyUIApiKey))
+					.IsPassword(true)
+					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
+					{
+						UGenAISettings::Get()->ComfyUIApiKey = NewText.ToString();
+						ApplySettingsToConfig();
+					})
+					.ToolTipText(LOCTEXT("ApiKeyTip",
+						"ComfyUI Account API Key for partner API nodes (Gemini, etc.).\n"
+						"Generate at: https://platform.comfy.org\n"
+						"Required for Nano Banana 2 and other API nodes."))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				)
+			]
+
+			// Timeout
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 1.0f)
+			[
+				MakeSettingsRow(
+					LOCTEXT("TimeoutLabel", "Timeout (sec)"),
+					SNew(SSpinBox<float>)
+					.MinValue(5.0f)
+					.MaxValue(600.0f)
+					.Value_Lambda([this]() { return UGenAISettings::Get()->TimeoutSeconds; })
+					.OnValueChanged_Lambda([this](float NewVal)
+					{
+						UGenAISettings::Get()->TimeoutSeconds = NewVal;
+					})
+					.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+					{
+						UGenAISettings::Get()->TimeoutSeconds = NewVal;
+						ApplySettingsToConfig();
+					})
+				)
+			]
+
+			// Poll Interval
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 1.0f)
+			[
+				MakeSettingsRow(
+					LOCTEXT("PollIntervalLabel", "Poll Interval (ms)"),
+					SNew(SSpinBox<float>)
+					.MinValue(100.0f)
+					.MaxValue(5000.0f)
+					.Delta(100.0f)
+					.Value_Lambda([this]() { return UGenAISettings::Get()->ProgressPollInterval * 1000.0f; })
+					.OnValueChanged_Lambda([this](float NewVal)
+					{
+						UGenAISettings::Get()->ProgressPollInterval = NewVal / 1000.0f;
+					})
+					.OnValueCommitted_Lambda([this](float NewVal, ETextCommit::Type)
+					{
+						UGenAISettings::Get()->ProgressPollInterval = NewVal / 1000.0f;
+						ApplySettingsToConfig();
+					})
+				)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Meshy API Key
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 1.0f)
+			[
+				MakeSettingsRow(
+					LOCTEXT("MeshyApiKeyLabel", "Meshy API Key"),
+					SAssignNew(MeshyApiKeyInput, SEditableTextBox)
+					.Text(FText::FromString(Settings->MeshyApiKey))
+					.IsPassword(true)
+					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
+					{
+						UGenAISettings::Get()->MeshyApiKey = NewText.ToString();
+						ApplySettingsToConfig();
+					})
+					.ToolTipText(LOCTEXT("MeshyApiKeyTip",
+						"Meshy API Key for Image-to-3D conversion.\n"
+						"Get yours at: https://www.meshy.ai/api\n"
+						"Format: msy-XXXX"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Model Paths section (collapsible)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 2.0f)
+			[
+				BuildCollapsibleSection(
+					LOCTEXT("ModelPathsSection", "Model Paths"),
+					bModelExpanded,
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("CheckpointPathLabel", "Checkpoint"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("Checkpoint")))),
+							SNullWidget::NullWidget
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("LoRAPathLabel", "LoRA"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("LoRA")))),
+							SNullWidget::NullWidget
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("ControlNetPathLabel", "ControlNet"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("ControlNet")))),
+							SNullWidget::NullWidget
+						)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.0f, 1.0f)
+					[
+						MakeSettingsRow(
+							LOCTEXT("UNETPathLabel", "UNET"),
+							FText::FromString(FString::Printf(TEXT("ComfyUI path: %s"), *UGenAISettings::Get()->GetModelPath(TEXT("UNET")))),
+							SNullWidget::NullWidget
+						)
+					]
+				)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Test Connection button
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(4.0f)
+			[
+				SNew(SButton)
+				.HAlign(HAlign_Center)
+				.Text(LOCTEXT("TestConnection", "Test Connection"))
+				.ToolTipText(LOCTEXT("TestConnectionTip", "Test connectivity to ComfyUI"))
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					if (HttpClient.IsValid())
+					{
+						UpdateStatusText(TEXT("Testing connection to ComfyUI..."));
+						HttpClient->TestConnection();
+					}
+					return FReply::Handled();
+				})
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SSeparator)
+			]
+
+			// Refresh Models button
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(4.0f)
+			[
+				SNew(SButton)
+				.HAlign(HAlign_Center)
+				.Text(LOCTEXT("RefreshModelsBtn", "Refresh Models"))
+				.ToolTipText(LOCTEXT("RefreshModelsBtnTip", "Re-fetch available models from ComfyUI"))
+				.OnClicked_Lambda([this]() -> FReply
+				{
+					FetchAndPopulateModels();
+					return FReply::Handled();
+				})
+			]
+		];
+}
+
+// ============================================================================
 // Status Bar
 // ============================================================================
 
@@ -2113,10 +3676,17 @@ void SViewGenPanel::FilterModelsForCurrentMode()
 	CheckpointOptions.Empty();
 	for (const FString& Name : AllCheckpoints)
 	{
-		if (IsCompatibleWithMode(Name, bFluxMode))
+		if (!IsCompatibleWithMode(Name, bFluxMode))
 		{
-			CheckpointOptions.Add(MakeShareable(new FString(Name)));
+			continue;
 		}
+		// In SD mode, also hide models that ComfyUI lists under UNETLoader
+		// (these are diffusion-only models without bundled CLIP)
+		if (!bFluxMode && AllUNETs.Contains(Name))
+		{
+			continue;
+		}
+		CheckpointOptions.Add(MakeShareable(new FString(Name)));
 	}
 	// If the saved checkpoint exists in the filtered list, select it.
 	// Otherwise auto-select the first available model so generation works out of the box.
@@ -2204,6 +3774,10 @@ void SViewGenPanel::OnModelsReceived(const TArray<FString>& Checkpoints, const T
 	AllLoRAs = LoRAs;
 	AllControlNets = ControlNets;
 	AllUNETs = UNETs;
+
+	// Cache UNET names on settings so ShouldUseFluxPath() can detect
+	// when a checkpoint is actually a Flux diffusion-only model
+	UGenAISettings::Get()->CachedUNETNames = UNETs;
 
 	// Apply architecture-based filtering
 	FilterModelsForCurrentMode();
@@ -2330,7 +3904,11 @@ TSharedRef<SWidget> SViewGenPanel::BuildCollapsibleSection(const FText& Title, b
 		];
 }
 
-TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
+// BuildSettingsPanel was removed — its contents were redistributed into
+// BuildGenerateTab(), BuildGraphEditorTab(), and BuildConnectionTab().
+
+#if 0 // Dead code — kept temporarily for reference, will be removed
+TSharedRef<SWidget> SViewGenPanel_DEAD_BuildSettingsPanel()
 {
 	UGenAISettings* Settings = UGenAISettings::Get();
 
@@ -3623,6 +5201,8 @@ TSharedRef<SWidget> SViewGenPanel::BuildSettingsPanel()
 		];
 }
 
+#endif // Dead BuildSettingsPanel code
+
 void SViewGenPanel::ResetSettingsToDefaults()
 {
 	UGenAISettings* Settings = UGenAISettings::Get();
@@ -4486,83 +6066,6 @@ FString SViewGenPanel::EstimateVideoCost() const
 // ============================================================================
 // Graph Editor (Interactive ComfyUI-style editor)
 // ============================================================================
-
-TSharedRef<SWidget> SViewGenPanel::BuildGraphEditorSection()
-{
-	// Returns ONLY the collapsible header toggle.
-	// The graph editor body (SSplitter with canvas + details panel) is placed in a
-	// separate FillHeight slot outside the SScrollBox so it can expand to fill all
-	// available space down to the toolbar.
-	return SNew(SButton)
-		.ButtonStyle(FAppStyle::Get(), "NoBorder")
-		.OnClicked_Lambda([this]() -> FReply
-		{
-			bGraphEditorExpanded = !bGraphEditorExpanded;
-			if (bGraphEditorExpanded && GraphEditor.IsValid())
-			{
-				// Restore last-edited graph if empty, fall back to preset graph
-				if (GraphEditor->GetNodes().Num() == 0)
-				{
-					if (!RestoreLastGraph())
-					{
-						GraphEditor->BuildPresetGraph();
-					}
-				}
-				RefreshLoadImageThumbnails();
-			}
-			return FReply::Handled();
-		})
-		.Content()
-		[
-			SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-			[
-				SNew(STextBlock)
-				.Text_Lambda([this]()
-				{
-					return bGraphEditorExpanded
-						? FText::FromString(TEXT("\x25BC"))
-						: FText::FromString(TEXT("\x25B6"));
-				})
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-			]
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(TEXT("Graph Editor")))
-				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.35f, 0.70f, 0.85f)))
-			]
-
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.0f)
-			[
-				SNullWidget::NullWidget
-			]
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(TEXT("Right-click to add nodes | Del to delete | Ctrl+L auto-layout")))
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-				.Visibility_Lambda([this]()
-				{
-					return bGraphEditorExpanded ? EVisibility::Visible : EVisibility::Collapsed;
-				})
-			]
-		];
-}
 
 void SViewGenPanel::OnGraphSelectionChanged()
 {
@@ -8419,9 +9922,16 @@ void SViewGenPanel::ShowHistoryEntry(int32 Index)
 
 		if (PreviewImage.IsValid())
 		{
+			// Force a fresh brush set so Slate detects the change and repaints.
+			// Without this, passing the same FSlateBrush pointer may skip invalidation
+			// when navigating via arrows (no click interaction to trigger repaint).
+			PreviewImage->SetImage(nullptr);
 			PreviewImage->SetImage(PreviewBrush.Get());
 		}
 	}
+
+	// Sync video source frame so the Video tab uses the currently viewed image
+	SetVideoSourceFromTexture(Entry.Texture);
 }
 
 // ============================================================================
@@ -8607,11 +10117,6 @@ void SViewGenPanel::RebuildResultGallery()
 				.OnClicked_Lambda([this, EntryIndex]() -> FReply
 				{
 					ShowHistoryEntry(EntryIndex);
-					// Also update the video source frame so switching to Video tab uses this image
-					if (ImageHistory.IsValidIndex(EntryIndex))
-					{
-						SetVideoSourceFromTexture(ImageHistory[EntryIndex].Texture);
-					}
 					return FReply::Handled();
 				})
 				.ToolTipText(FText::FromString(FString::Printf(TEXT("Result %d"), EntryIndex + 1)))

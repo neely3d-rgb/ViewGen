@@ -280,6 +280,16 @@ public:
 			EditCondition = "bUseFluxControlNet"))
 	FString FluxVAEName = TEXT("ae.safetensors");
 
+	/**
+	 * Runtime cache of UNET model names reported by ComfyUI's UNETLoader node.
+	 * Used by ShouldUseFluxPath() to detect when a checkpoint is actually a
+	 * Flux diffusion-only model that needs the split-loader path (UNETLoader +
+	 * DualCLIPLoader + VAELoader) instead of CheckpointLoaderSimple.
+	 * Not saved to config — populated each time we fetch models from ComfyUI.
+	 */
+	UPROPERTY(Transient)
+	TArray<FString> CachedUNETNames;
+
 	/** ControlNet model name as listed in ComfyUI (e.g. "control_v11f1p_sd15_depth.pth") */
 	UPROPERTY(config, EditAnywhere, Category = "Depth",
 		meta = (DisplayName = "ControlNet Model", EditCondition = "bEnableDepthControlNet"))

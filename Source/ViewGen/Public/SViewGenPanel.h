@@ -90,7 +90,9 @@ private:
 	TSharedRef<SWidget> BuildResultGalleryPanel();
 	TSharedRef<SWidget> BuildPromptPanel();
 	TSharedRef<SWidget> BuildLoRAPanel();
-	TSharedRef<SWidget> BuildSettingsPanel();
+	TSharedRef<SWidget> BuildGenerateTab();
+	TSharedRef<SWidget> BuildGraphEditorTab();
+	TSharedRef<SWidget> BuildConnectionTab();
 	TSharedRef<SWidget> BuildStatusBar();
 
 	/** Helper: build a labeled row with a label on the left and a widget on the right */
@@ -248,6 +250,8 @@ private:
 	TSharedPtr<FString> FindMatchingOption(const TArray<TSharedPtr<FString>>& Options, const FString& Value);
 
 	bool bSettingsExpanded = false;
+	bool bAdvancedSettingsExpanded = false;
+
 	/** Interactive graph editor widget */
 	TSharedPtr<SWorkflowGraphEditor> GraphEditor;
 
@@ -262,6 +266,12 @@ private:
 
 	/** Called when the graph editor's selection changes */
 	void OnGraphSelectionChanged();
+
+	/** Switcher for the 3 sub-tabs inside Image Generation tab: Generate | Graph Editor | Connection */
+	TSharedPtr<SWidgetSwitcher> SubTabSwitcher;
+
+	/** Currently active sub-tab index (0=Generate, 1=GraphEditor, 2=Connection) */
+	int32 ActiveSubTabIndex = 0;
 
 	/** Combo box option arrays for the details panel.
 	 *  Stored as shared pointers so that SComboBox widgets keep the arrays alive
@@ -324,11 +334,6 @@ private:
 	/** Thumbnail brush for the LoadImage node preview in the details panel */
 	TSharedPtr<FSlateBrush> NodeDetailsThumbnailBrush;
 
-	/** Build the interactive graph editor section */
-	TSharedRef<SWidget> BuildGraphEditorSection();
-
-	/** Whether the graph editor section is expanded */
-	bool bGraphEditorExpanded = false;
 
 	/** Perform a one-shot prompt sync to the Video tab and all graph editor prompt nodes */
 	void PerformPromptSync();
