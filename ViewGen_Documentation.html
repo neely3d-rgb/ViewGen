@@ -183,7 +183,7 @@
 <div class="cover-banner">
   <h1>ViewGen</h1>
   <div class="subtitle">AI Viewport Generator for Unreal Engine</div>
-  <div class="version">Plugin Documentation v2.0.0</div>
+  <div class="version">Plugin Documentation v2.1.0</div>
 </div>
 
 <p class="cover-desc">
@@ -193,7 +193,7 @@
 
 <div class="cover-meta">
   <b>Author:</b> C. Michael Neely<br>
-  <b>Version:</b> 1.0.0 (Beta)<br>
+  <b>Version:</b> 2.1.0 (Beta)<br>
   <b>Engine:</b> Unreal Engine 5.7<br>
   <b>Platforms:</b> Windows, Linux, macOS<br>
   <b>&copy; 2026 Creative Story Lab Inc</b>
@@ -240,7 +240,7 @@
 <ul class="features">
   <li><b>Viewport Capture</b> &mdash; Captures the active editor viewport at native resolution with full camera metadata (FOV, focal length, position, rotation).</li>
   <li><b>Depth Map Extraction</b> &mdash; Renders a linearized depth pass from the viewport camera for use as a ControlNet guide.</li>
-  <li><b>Multiple Generation Modes</b> &mdash; img2img, depth+prompt, text-only, Gemini, and Kling pipelines, each with a master Reference Adherence slider.</li>
+  <li><b>Multiple Generation Modes</b> &mdash; img2img, depth+prompt, text-only, Gemini, and Kling pipelines with per-mode parameter controls.</li>
   <li><b>Node Graph Editor</b> &mdash; Interactive drag-and-drop graph editor supporting all ComfyUI node types plus custom UE source nodes.</li>
   <li><b>Video Generation</b> &mdash; Image-to-video via Kling Video, Wan I2V, and Google Veo3.</li>
   <li><b>3D Model Pipeline</b> &mdash; Convert generated images to 3D meshes via Meshy, import as UE assets with collision and Nanite support.</li>
@@ -248,9 +248,6 @@
   <li><b>Result Gallery</b> &mdash; Browse, select, and navigate generation history with thumbnail previews.</li>
   <li><b>Workflow Save/Load</b> &mdash; Save and load graph editor workflows as JSON files, including ComfyUI template import.</li>
   <li><b>Cost Estimation</b> &mdash; Shows estimated API costs in the status bar before generation starts, with user-configurable pricing tables.</li>
-  <li><b>Error Node Highlighting</b> &mdash; When a ComfyUI node fails during generation, it is highlighted in red in the graph editor for instant visual diagnosis.</li>
-  <li><b>Smart Model Detection</b> &mdash; Automatic detection of Flux vs SD checkpoints prevents common errors like loading a UNET-only model through CheckpointLoaderSimple. Checkpoint and UNET model dropdowns are filtered by architecture.</li>
-  <li><b>Model Path Tooltips</b> &mdash; Hover over any model-related settings label to see the ComfyUI directory where that model type should be placed. Paths are customizable and persist across presets.</li>
 </ul>
 
 <!-- ═══════════════ 2. INSTALLATION ═══════════════ -->
@@ -283,7 +280,7 @@
 </table>
 
 <h3>API Keys</h3>
-<p>Some features require API keys configured in the ViewGen panel's Settings section:</p>
+<p>Some features require API keys configured in the ViewGen panel's <b>Connection</b> tab:</p>
 
 <h4>ComfyUI API Key (optional)</h4>
 <p>
@@ -296,7 +293,7 @@
   <li>Verify your email address.</li>
   <li>Navigate to <a href="https://platform.comfy.org/profile/api-keys" target="_blank">platform.comfy.org/profile/api-keys</a>.</li>
   <li>Click <b>Create API Key</b> and copy the generated key. Format: <code>comfyui-xxxxx</code></li>
-  <li>Paste the key into the <b>ComfyUI API Key</b> field in ViewGen's Settings section.</li>
+  <li>Paste the key into the <b>ComfyUI API Key</b> field in ViewGen's Connection tab.</li>
 </ol>
 <p>
   Note: Paid API nodes require credits on your ComfyUI account. You can purchase credits at
@@ -312,7 +309,7 @@
   <li>Go to <a href="https://www.meshy.ai" target="_blank">meshy.ai</a> and create an account (or sign in).</li>
   <li>Navigate to your account settings and locate the API section.</li>
   <li>Generate a new API key. Format: <code>msy-XXXX</code></li>
-  <li>Paste the key into the <b>Meshy API Key</b> field in ViewGen's Settings section.</li>
+  <li>Paste the key into the <b>Meshy API Key</b> field in ViewGen's Connection tab.</li>
 </ol>
 
 <!-- ═══════════════ 3. UI OVERVIEW ═══════════════ -->
@@ -320,28 +317,38 @@
 
 <p>
   The ViewGen panel is a nomad tab accessible via the toolbar button or Window &gt; ViewGen.
-  The interface is divided into several key areas.
+  The interface is divided into a top section (viewport capture and results) and a bottom section
+  with three tabs for different workflows.
 </p>
 
 <h3>Layout Structure</h3>
 <p>
-  The panel is split into a top section and bottom section via a vertical splitter. The top section
-  contains three columns: input thumbnails (left), main preview (center), and result gallery (right).
-  The bottom section contains the prompt inputs, LoRA panel, settings, and the graph editor.
+  The panel is split into a top section and bottom section. The top section contains three columns:
+  input thumbnails (left), main preview (center), and result gallery (right). The bottom section
+  contains a three-tab system: <b>Basic</b>, <b>Graph Editor</b>, and <b>Connection</b>.
 </p>
 
 <h4>Toolbar</h4>
 <p>
-  The toolbar at the top provides three primary actions: <b>Capture Viewport</b> captures the active
-  editor viewport and depth map, populating the thumbnails. <b>Generate</b> sends the captured data
-  and prompts to the configured generation backend. <b>Cancel</b> aborts an in-flight generation request.
+  The toolbar at the top provides the primary action: <b>Capture Viewport</b> captures the active
+  editor viewport and depth map simultaneously, populating the thumbnails.
 </p>
 
-<h4>Tab Switcher</h4>
+<h4>Tab System</h4>
 <p>
-  Below the toolbar, tabs switch between <b>Image Generation</b> and <b>Video Generation</b> modes.
-  Each tab has its own layout and controls tailored to the generation type.
+  Below the viewport/results area, three tabs organize the plugin's controls:
 </p>
+<ul class="features">
+  <li><b>Basic</b> &mdash; Artist-friendly controls: prompt, generation mode, checkpoint and LoRA selection,
+  resolution, steps, seed, and the Generate button. Mode-specific settings (Gemini, Kling) appear
+  conditionally based on the selected mode. An Advanced collapsible section provides access to
+  depth/ControlNet, hi-res fix, defaults, and presets.</li>
+  <li><b>Graph Editor</b> &mdash; Full visual node-graph editor for building and editing ComfyUI workflows.
+  Includes a horizontal splitter between the graph canvas and a node details panel, plus a bottom
+  toolbar with Generate from Graph, Load, Save, Fullscreen, and Clear buttons.</li>
+  <li><b>Connection</b> &mdash; Server and API configuration: ComfyUI URL, API keys (ComfyUI, Gemini, Kling,
+  Meshy), timeout settings, and model paths. Includes Test Connection and Refresh Models buttons.</li>
+</ul>
 
 <h4>Thumbnail Panel</h4>
 <p>
@@ -424,31 +431,24 @@
   </tbody>
 </table>
 
-<h3>Reference Adherence Slider</h3>
+<h3>Per-Mode Parameters</h3>
 <p>
-  The master <b>Reference Adherence</b> slider (0.0 to 1.0) controls how closely the generation follows
-  your viewport reference. At 0.0 (Creative), the AI has maximum freedom. At 1.0 (Faithful), the output
-  closely matches the viewport. This single slider maps to multiple underlying parameters depending on the mode.
+  Each generation mode exposes its own relevant parameters directly in the Basic tab. For ComfyUI
+  modes (img2img, Depth+Prompt, Prompt Only), you control denoising strength, CFG scale, steps,
+  and seed individually. For Gemini, you can adjust the model variant, aspect ratio, resolution tier,
+  and thinking level. For Kling, you configure the model version, aspect ratio, image count, and
+  image fidelity. All parameters are accessible without switching tabs.
 </p>
-
-<table>
-  <thead><tr><th>Mode</th><th>At 0.0 (Creative)</th><th>At 0.5 (Balanced)</th><th>At 1.0 (Faithful)</th></tr></thead>
-  <tbody>
-    <tr><td>img2img</td><td>Denoise=0.1, CFG=1, Steps=10</td><td>Denoise=0.55, CFG=7, Steps=30</td><td>Denoise=0.95, CFG=15, Steps=50</td></tr>
-    <tr><td>Depth+Prompt</td><td>CN Weight=0, CFG=1</td><td>CN Weight=1.0, CFG=7</td><td>CN Weight=2.0, CFG=15</td></tr>
-    <tr><td>Prompt Only</td><td>CFG=1, Steps=10</td><td>CFG=7, Steps=30</td><td>CFG=15, Steps=50</td></tr>
-    <tr><td>Gemini</td><td>Thinking: MINIMAL</td><td>&mdash;</td><td>Thinking: HIGH</td></tr>
-    <tr><td>Kling</td><td>Fidelity=0.0</td><td>Fidelity=0.5</td><td>Fidelity=1.0</td></tr>
-  </tbody>
-</table>
 
 <!-- ═══════════════ 6. GRAPH EDITOR ═══════════════ -->
 <h2 class="section-title" id="s6">6. The Graph Editor</h2>
 
 <p>
-  The graph editor is a fully interactive node-based workflow builder embedded in the bottom section of
-  the panel. It supports all ComfyUI node types (discovered dynamically from the server) plus custom UE
-  source nodes for viewport capture, depth, camera data, and more.
+  The graph editor lives in its own dedicated <b>Graph Editor</b> tab, providing a fully interactive
+  node-based workflow builder. It supports all ComfyUI node types (discovered dynamically from the
+  server) plus custom UE source nodes for viewport capture, depth, camera data, and more. The tab
+  includes a horizontal splitter between the graph canvas and a node details panel, with a toolbar
+  pinned to the bottom.
 </p>
 
 <h3>Navigation</h3>
@@ -524,13 +524,6 @@
   During workflow execution, the currently active ComfyUI node is highlighted in yellow in real-time
   via WebSocket. This gives you visual feedback on which stage of the pipeline is running. The Cancel
   button in the toolbar sends an interrupt signal to ComfyUI to stop the current generation.
-</p>
-<p>
-  <b>Error Node Highlighting:</b> If a node fails during execution, it is highlighted with a red glow
-  (a three-layer gradient effect) that persists after the generation stops. This makes it easy to identify
-  which node in a complex workflow caused the failure. The error message in the status bar also includes
-  diagnostic hints &mdash; for example, if a model loader node fails, the plugin suggests which ComfyUI
-  model directory to check. Error highlights are automatically cleared when you start a new generation.
 </p>
 
 <h3>Results Gallery</h3>
@@ -682,8 +675,10 @@
 <h2 class="section-title" id="s13">13. Settings Reference</h2>
 
 <p>
-  All settings are accessible via <b>Project Settings &gt; Plugins &gt; ViewGen</b>. They are persisted
-  in the project's editor configuration files.
+  Connection and API settings are configured in the <b>Connection</b> tab within the ViewGen panel.
+  Generation parameters are available in the <b>Basic</b> tab. All settings are also accessible via
+  <b>Project Settings &gt; Plugins &gt; ViewGen</b> and are persisted in the project's editor
+  configuration files.
 </p>
 
 <h3>Connection Settings</h3>
@@ -717,39 +712,9 @@
   <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td>Enable Depth ControlNet</td><td>false</td><td>Use depth map as structural guide</td></tr>
-    <tr><td>Use Flux ControlNet</td><td>false</td><td>Switch to XLabs Flux ControlNet path (UNETLoader + DualCLIPLoader + VAELoader instead of CheckpointLoaderSimple)</td></tr>
-    <tr><td>UNET / Diffusion Model</td><td>flux1-dev.safetensors</td><td>Flux UNET model file. Dropdown populated from ComfyUI's UNETLoader node. Only used when Flux mode is active.</td></tr>
-    <tr><td>Checkpoint</td><td>&mdash;</td><td>Checkpoint model for SD workflows. Dropdown populated from ComfyUI. Filtered by architecture: Flux models hidden in SD mode and vice versa.</td></tr>
-    <tr><td>ControlNet Model</td><td>control_v11f1p_sd15_depth.pth</td><td>Depth control model filename. Filtered by architecture.</td></tr>
+    <tr><td>ControlNet Model</td><td>control_v11f1p_sd15_depth.pth</td><td>Depth control model filename</td></tr>
     <tr><td>ControlNet Strength</td><td>1.0</td><td>Influence strength (0.0-2.0)</td></tr>
     <tr><td>Max Depth Distance</td><td>50,000 UU</td><td>Far boundary for depth normalization (100-500,000)</td></tr>
-  </tbody>
-</table>
-<p>
-  <b>Smart Flux Detection:</b> If the Flux toggle is off but the selected checkpoint contains "flux" in its name,
-  the plugin automatically uses the split-loader path (UNETLoader + DualCLIPLoader + VAELoader) instead of
-  CheckpointLoaderSimple. This prevents the common "missing CLIP model" error when a UNET-only Flux checkpoint
-  is accidentally selected in SD mode.
-</p>
-
-<h3>Model Path Hints</h3>
-<p>
-  Each model-related settings label displays a tooltip showing the ComfyUI directory where that model type
-  should be placed (e.g., hovering over "Checkpoint" shows <code>models/checkpoints/</code>). These paths
-  are configurable via <b>Project Settings &gt; Plugins &gt; ViewGen &gt; Model Directory Paths</b> and
-  persist in presets, so non-standard ComfyUI installations can be accommodated. Default paths include:
-</p>
-<table>
-  <thead><tr><th>Model Type</th><th>Default ComfyUI Path</th></tr></thead>
-  <tbody>
-    <tr><td>Checkpoint</td><td>models/checkpoints/</td></tr>
-    <tr><td>LoRA</td><td>models/loras/</td></tr>
-    <tr><td>VAE</td><td>models/vae/</td></tr>
-    <tr><td>ControlNet</td><td>models/controlnet/</td></tr>
-    <tr><td>CLIP</td><td>models/clip/</td></tr>
-    <tr><td>UNET</td><td>models/unet/ or models/diffusion_models/</td></tr>
-    <tr><td>Upscale</td><td>models/upscale_models/</td></tr>
-    <tr><td>Embedding</td><td>models/embeddings/</td></tr>
   </tbody>
 </table>
 
@@ -881,14 +846,14 @@
   <li><b>Import ComfyUI workflows:</b> Use File &rarr; Export in ComfyUI to save a workflow, then click Load in ViewGen's graph editor. Both Web UI and API formats are supported. Web UI exports preserve node positions and group boxes.</li>
   <li><b>Run individual branches:</b> Click the green play button on any output node (SaveImage, PreviewImage) to execute only the upstream subgraph for that node, without running the entire workflow.</li>
   <li><b>Organize with groups:</b> Select related nodes, right-click &rarr; Create Group from Selection. Use colors and titles to visually separate pipeline stages.</li>
-  <li><b>Use the Reference Adherence slider</b> instead of manually adjusting CFG, steps, and denoise. It controls all three simultaneously for a balanced result.</li>
+  <li><b>Switch between tabs</b> to access different workflows: Basic for quick generation, Graph Editor for custom ComfyUI pipelines, and Connection for server setup.</li>
   <li><b>Camera data injection</b> is tagged to prevent duplicates. You can safely click Generate multiple times without the camera description accumulating in your prompt.</li>
   <li><b>Gallery selection:</b> The currently selected result is shown at full brightness. Click any dimmed thumbnail to switch to it. The selected image also becomes the source frame for the Video Generation tab.</li>
 </ul>
 
 <!-- ═══════════════ FOOTER ═══════════════ -->
 <div class="footer">
-  &copy; 2026 Creative Story Lab Inc &nbsp;|&nbsp; C. Michael Neely &nbsp;|&nbsp; Confidential &nbsp;|&nbsp; ViewGen Plugin v2.0.0 Beta
+  &copy; 2026 Creative Story Lab Inc &nbsp;|&nbsp; C. Michael Neely &nbsp;|&nbsp; Confidential &nbsp;|&nbsp; ViewGen Plugin v2.1.0 Beta
 </div>
 
 </body>
