@@ -1326,6 +1326,9 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 	);
 	LayerId++;
 
+	// Clip all subsequent drawing (grid, nodes, connections) to the widget bounds
+	OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry));
+
 	// Draw grid
 	{
 		float GridSpacing = GraphConstants::GridSize * ZoomLevel;
@@ -1361,8 +1364,6 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 		}
 	}
 	LayerId++;
-
-	OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry));
 
 	// Draw group boxes (behind everything else)
 	{
@@ -4745,6 +4746,40 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 
 		NodeObj->SetObjectField(TEXT("inputs"), InputsObj);
 		Workflow->SetObjectField(Node.Id, NodeObj);
+	}
+
+	// Debug: log all emitted node IDs and all link references to catch missing nodes
+	{
+		TSet<FString> EmittedIds;
+		for (const auto& Pair : Workflow->Values)
+		{
+			EmittedIds.Add(Pair.Key);
+		}
+
+		for (const auto& Pair : Workflow->Values)
+		{
+			TSharedPtr<FJsonObject> NodeObj = Pair.Value->AsObject();
+			if (!NodeObj.IsValid()) continue;
+
+			TSharedPtr<FJsonObject> InputsObj = NodeObj->GetObjectField(TEXT("inputs"));
+			if (!InputsObj.IsValid()) continue;
+
+			FString ClassType = NodeObj->GetStringField(TEXT("class_type"));
+
+			for (const auto& InputPair : InputsObj->Values)
+			{
+				const TArray<TSharedPtr<FJsonValue>>* LinkArr;
+				if (InputPair.Value->TryGetArray(LinkArr) && LinkArr->Num() >= 2)
+				{
+					FString SourceId = (*LinkArr)[0]->AsString();
+					if (!EmittedIds.Contains(SourceId))
+					{
+						UE_LOG(LogTemp, Error, TEXT("ViewGen Export: Node '%s' (%s) input '%s' references missing node '%s'!"),
+							*Pair.Key, *ClassType, *InputPair.Key, *SourceId);
+					}
+				}
+			}
+		}
 	}
 
 	// Post-pass: rewrite downstream links that reference Image Bridge nodes.

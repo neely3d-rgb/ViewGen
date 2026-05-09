@@ -336,7 +336,7 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 							.Padding(FMargin(8.0f, 4.0f))
 							[
 								SNew(STextBlock)
-								.Text(LOCTEXT("GenerateSubTab", "Generate"))
+								.Text(LOCTEXT("BasicSubTab", "Basic"))
 								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
 							]
 						]
@@ -1217,20 +1217,6 @@ TSharedRef<SWidget> SViewGenPanel::BuildGenerateTab()
 {
 	UGenAISettings* Settings = UGenAISettings::Get();
 
-	// Reference Adherence slider will be at the top
-	auto ReferenceAdherenceSlider = SNew(SSlider)
-		.Style(FAppStyle::Get(), "Slider")
-		.Value_Lambda([this]() { return UGenAISettings::Get()->ReferenceAdherence; })
-		.OnValueChanged_Lambda([this](float NewVal)
-		{
-			UGenAISettings::Get()->ReferenceAdherence = NewVal;
-			ApplyAdherenceToSettings(NewVal);
-		})
-		.ToolTipText(LOCTEXT("ReferenceAdherenceTip",
-			"How closely the output should match the input image:\n"
-			"Low (0.0) = creative freedom\n"
-			"High (1.0) = faithful to input"));
-
 	return SNew(SScrollBox)
 
 		+ SScrollBox::Slot()
@@ -1383,26 +1369,12 @@ TSharedRef<SWidget> SViewGenPanel::BuildGenerateTab()
 				SNew(SSeparator)
 			]
 
-			// Generation section (Reference Adherence slider + main controls)
+			// Generation section (main controls)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.0f, 4.0f)
 			[
 				SNew(SVerticalBox)
-
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 1.0f)
-				[
-					MakeSettingsRow(
-						LOCTEXT("ReferenceAdherenceLabel", "Reference Adherence"),
-						SNew(SBox)
-						.Padding(FMargin(0.0f, 2.0f))
-						[
-							ReferenceAdherenceSlider
-						]
-					)
-				]
 
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -1506,13 +1478,15 @@ TSharedRef<SWidget> SViewGenPanel::BuildGenerateTab()
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.0f, 2.0f)
-			.Visibility_Lambda([this]()
-			{
-				return UGenAISettings::Get()->GenerationMode == EGenMode::Gemini
-					? EVisibility::Visible : EVisibility::Collapsed;
-			})
 			[
-				BuildCollapsibleSection(
+				SNew(SBox)
+				.Visibility_Lambda([this]()
+				{
+					return UGenAISettings::Get()->GenerationMode == EGenMode::Gemini
+						? EVisibility::Visible : EVisibility::Collapsed;
+				})
+				[
+					BuildCollapsibleSection(
 					LOCTEXT("GeminiSection", "Gemini (Nano Banana 2)"),
 					bGeminiExpanded,
 					SNew(SVerticalBox)
@@ -1707,19 +1681,22 @@ TSharedRef<SWidget> SViewGenPanel::BuildGenerateTab()
 						)
 					]
 				)
+				]
 			]
 
 			// Kling section
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.0f, 2.0f)
-			.Visibility_Lambda([this]()
-			{
-				return UGenAISettings::Get()->GenerationMode == EGenMode::Kling
-					? EVisibility::Visible : EVisibility::Collapsed;
-			})
 			[
-				BuildCollapsibleSection(
+				SNew(SBox)
+				.Visibility_Lambda([this]()
+				{
+					return UGenAISettings::Get()->GenerationMode == EGenMode::Kling
+						? EVisibility::Visible : EVisibility::Collapsed;
+				})
+				[
+					BuildCollapsibleSection(
 					LOCTEXT("KlingSection", "Kling (Image 3.0)"),
 					bKlingExpanded,
 					SNew(SVerticalBox)
@@ -1801,6 +1778,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildGenerateTab()
 						)
 					]
 				)
+				]
 			]
 
 			+ SVerticalBox::Slot()
@@ -2929,7 +2907,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildConnectionTab()
 					if (HttpClient.IsValid())
 					{
 						UpdateStatusText(TEXT("Testing connection to ComfyUI..."));
-						HttpClient->TestConnection();
+						FetchAndPopulateModels();
 					}
 					return FReply::Handled();
 				})
@@ -8381,6 +8359,18 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 	}
 
 	UpdateStatusText(TEXT("Submitting graph workflow to ComfyUI..."));
+
+	// Debug: log all node IDs and their class_types before submission
+	UE_LOG(LogTemp, Log, TEXT("ViewGen: === Workflow nodes being submitted ==="));
+	for (const auto& Pair : Workflow->Values)
+	{
+		TSharedPtr<FJsonObject> NodeObj = Pair.Value->AsObject();
+		if (NodeObj.IsValid())
+		{
+			FString ClassType = NodeObj->GetStringField(TEXT("class_type"));
+			UE_LOG(LogTemp, Log, TEXT("  Node '%s': %s"), *Pair.Key, *ClassType);
+		}
+	}
 
 	// Submit directly
 	HttpClient->SubmitWorkflowDirect(Workflow);
