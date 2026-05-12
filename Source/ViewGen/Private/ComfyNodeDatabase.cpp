@@ -108,7 +108,7 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 	const TSharedPtr<FJsonObject>* InputObj;
 	if (NodeInfo->TryGetObjectField(TEXT("input"), InputObj))
 	{
-		auto ParseInputGroup = [&Def](const TSharedPtr<FJsonObject>& GroupObj, bool bRequired)
+		auto ParseInputGroup = [&Def, &ClassType](const TSharedPtr<FJsonObject>& GroupObj, bool bRequired)
 		{
 			if (!GroupObj.IsValid()) return;
 
@@ -142,7 +142,9 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 							InputDef.Type = TEXT("COMBO");
 						}
 
+						// Check if second element is an object with "options" key
 						const TSharedPtr<FJsonObject>* MetaObj;
+						const TArray<TSharedPtr<FJsonValue>>* DirectOptionsArray;
 						if ((*InputArray)[1]->TryGetObject(MetaObj))
 						{
 							const TArray<TSharedPtr<FJsonValue>>* Options;
@@ -155,6 +157,103 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 									{
 										InputDef.ComboOptions.Add(OptStr);
 									}
+									else
+									{
+										// V3 dynamic combo: options are objects with "key" and optional nested "inputs"
+										// e.g. {"key": "Normal", "inputs": {"required": {"pbr": ["BOOLEAN", {"default": false}]}}}
+										const TSharedPtr<FJsonObject>* OptObj;
+										if (Opt->TryGetObject(OptObj))
+										{
+											FString Key;
+											if ((*OptObj)->TryGetStringField(TEXT("key"), Key))
+											{
+												InputDef.ComboOptions.Add(Key);
+											}
+
+											// Parse nested conditional inputs — these become additional widgets
+											// on the node with dot-notation keys: "generate_type.pbr"
+											const TSharedPtr<FJsonObject>* NestedInputs;
+											if ((*OptObj)->TryGetObjectField(TEXT("inputs"), NestedInputs))
+											{
+												const TSharedPtr<FJsonObject>* NestedReq;
+												if ((*NestedInputs)->TryGetObjectField(TEXT("required"), NestedReq))
+												{
+													for (const auto& SubPair : (*NestedReq)->Values)
+													{
+														// Build a dot-notation key: "parentName.subName"
+														FString SubKey = InputPair.Key + TEXT(".") + SubPair.Key;
+
+														// Only add if we haven't seen this sub-input yet
+														bool bAlreadyExists = false;
+														for (const auto& Existing : Def.Inputs)
+														{
+															if (Existing.Name == SubKey) { bAlreadyExists = true; break; }
+														}
+														if (bAlreadyExists) continue;
+
+														// Parse the sub-input definition (same format as regular inputs)
+														const TArray<TSharedPtr<FJsonValue>>* SubArray;
+														if (!SubPair.Value->TryGetArray(SubArray) || SubArray->Num() == 0)
+															continue;
+
+														FComfyInputDef SubDef;
+														SubDef.Name = SubKey;
+														SubDef.bRequired = false; // Conditional on parent combo value
+
+														FString SubType;
+														if ((*SubArray)[0]->TryGetString(SubType))
+														{
+															SubDef.Type = SubType;
+
+															// Handle nested COMBO options
+															bool bSubCombo = (SubType == TEXT("COMBO") || SubType.StartsWith(TEXT("COMFY_DYNAMICCOMBO")));
+															if (bSubCombo)
+															{
+																SubDef.Type = TEXT("COMBO");
+																if (SubArray->Num() >= 2)
+																{
+																	const TSharedPtr<FJsonObject>* SubMeta;
+																	if ((*SubArray)[1]->TryGetObject(SubMeta))
+																	{
+																		const TArray<TSharedPtr<FJsonValue>>* SubOpts;
+																		if ((*SubMeta)->TryGetArrayField(TEXT("options"), SubOpts))
+																		{
+																			for (const auto& SO : *SubOpts)
+																			{
+																				FString SOStr;
+																				if (SO->TryGetString(SOStr))
+																					SubDef.ComboOptions.Add(SOStr);
+																			}
+																		}
+																	}
+																}
+															}
+
+															// Parse defaults from second element
+															if (SubArray->Num() >= 2)
+															{
+																const TSharedPtr<FJsonObject>* SubConstraint;
+																if ((*SubArray)[1]->TryGetObject(SubConstraint))
+																{
+																	double SubVal;
+																	if ((*SubConstraint)->TryGetNumberField(TEXT("default"), SubVal))
+																		SubDef.DefaultNumber = SubVal;
+																	FString SubStrVal;
+																	if ((*SubConstraint)->TryGetStringField(TEXT("default"), SubStrVal))
+																		SubDef.DefaultString = SubStrVal;
+																	bool SubBoolVal;
+																	if ((*SubConstraint)->TryGetBoolField(TEXT("default"), SubBoolVal))
+																		SubDef.DefaultBool = SubBoolVal;
+																}
+															}
+														}
+
+														Def.Inputs.Add(MoveTemp(SubDef));
+													}
+												}
+											}
+										}
+									}
 								}
 							}
 
@@ -164,12 +263,40 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 							{
 								InputDef.DefaultString = DefaultStr;
 							}
+
+							if (InputDef.ComboOptions.Num() == 0)
+							{
+								UE_LOG(LogTemp, Warning, TEXT("ViewGen: Node '%s' input '%s' (type=%s) has meta object but 0 combo options"),
+									*ClassType, *InputPair.Key, *TypeStr);
+							}
+						}
+						else if ((*InputArray)[1]->TryGetArray(DirectOptionsArray))
+						{
+							// Alternative format: second element is a direct array of options
+							// e.g. ["COMBO", ["option1", "option2", ...]]
+							for (const auto& Opt : *DirectOptionsArray)
+							{
+								FString OptStr;
+								if (Opt->TryGetString(OptStr))
+								{
+									InputDef.ComboOptions.Add(OptStr);
+								}
+							}
+							UE_LOG(LogTemp, Log, TEXT("ViewGen: Node '%s' input '%s' parsed %d options from direct array format"),
+								*ClassType, *InputPair.Key, InputDef.ComboOptions.Num());
+						}
+						else
+						{
+							UE_LOG(LogTemp, Warning, TEXT("ViewGen: Node '%s' input '%s' (type=%s) — second element is neither object nor array"),
+								*ClassType, *InputPair.Key, *TypeStr);
 						}
 					}
 					else if (bIsComboLike)
 					{
-						// V3 dynamic combo with no meta object — treat as COMBO with no options
+						// V3 dynamic combo with only 1 element — no meta/options at all
 						InputDef.Type = TEXT("COMBO");
+						UE_LOG(LogTemp, Warning, TEXT("ViewGen: Node '%s' input '%s' (type=%s) has no second element for options"),
+							*ClassType, *InputPair.Key, *TypeStr);
 					}
 				}
 				else

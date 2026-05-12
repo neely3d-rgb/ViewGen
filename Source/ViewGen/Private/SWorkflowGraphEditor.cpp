@@ -78,6 +78,10 @@ FLinearColor SWorkflowGraphEditor::GetNodeColor(const FString& ClassType)
 		return FLinearColor(0.55f, 0.40f, 0.20f); // Warm amber — 3D asset export
 	if (ClassType == UEPromptAdherenceClassType)
 		return FLinearColor(0.50f, 0.30f, 0.55f); // Purple — prompt adherence control
+	if (ClassType == UETextureUpscaleClassType || ClassType == UEGLBExtractClassType)
+		return FLinearColor(0.45f, 0.55f, 0.35f); // Olive-green — GLB extract
+	if (ClassType == UEGLBRepackClassType)
+		return FLinearColor(0.35f, 0.50f, 0.55f); // Teal — GLB repack
 	if (ClassType == UEImageUpresClassType)
 		return FLinearColor(0.35f, 0.55f, 0.65f);
 	if (ClassType == UESequenceClassType)
@@ -232,7 +236,7 @@ FString SWorkflowGraphEditor::AddNodeByType(const FString& ClassType, FVector2D 
 	FString NodeId = FString::FromInt(NextAutoNodeId++);
 
 	// Check for UE source nodes first
-	if (ClassType == UEViewportClassType || ClassType == UEDepthMapClassType || ClassType == UECameraDataClassType || ClassType == UESegmentationClassType || ClassType == UEMeshyImportClassType || ClassType == UESave3DModelClassType || ClassType == UE3DLoaderClassType || ClassType == UEImageBridgeClassType || ClassType == UE3DAssetExportClassType || ClassType == UEPromptAdherenceClassType || ClassType == UEImageUpresClassType || ClassType == UESequenceClassType || ClassType == UEVideoToImageClassType)
+	if (ClassType == UEViewportClassType || ClassType == UEDepthMapClassType || ClassType == UECameraDataClassType || ClassType == UESegmentationClassType || ClassType == UEMeshyImportClassType || ClassType == UESave3DModelClassType || ClassType == UE3DLoaderClassType || ClassType == UEImageBridgeClassType || ClassType == UE3DAssetExportClassType || ClassType == UEPromptAdherenceClassType || ClassType == UEImageUpresClassType || ClassType == UESequenceClassType || ClassType == UEVideoToImageClassType || ClassType == UETextureUpscaleClassType || ClassType == UEGLBExtractClassType || ClassType == UEGLBRepackClassType)
 	{
 		FGraphNode Node = CreateUESourceNode(ClassType, NodeId, GraphPosition);
 		int32 Idx = Nodes.Add(MoveTemp(Node));
@@ -1006,6 +1010,131 @@ FGraphNode SWorkflowGraphEditor::CreateUESourceNode(const FString& UEClassType, 
 		OutImage.PinIndex = 0;
 		OutImage.OwnerNodeId = Id;
 		Node.OutputPins.Add(OutImage);
+	}
+	else if (UEClassType == UETextureUpscaleClassType)
+	{
+		// Legacy — redirect to GLB Extract for backward compat
+		Node.Title = TEXT("UE GLB Extract");
+		Node.HeaderColor = FLinearColor(0.45f, 0.55f, 0.35f);
+		Node.ClassType = UEGLBExtractClassType;
+
+		Node.WidgetValues.Add(TEXT("glb_path"), TEXT(""));
+		FComfyInputDef PathDef;
+		PathDef.Name = TEXT("glb_path");
+		PathDef.Type = TEXT("STRING");
+		PathDef.DefaultString = TEXT("");
+		Node.WidgetInputDefs.Add(TEXT("glb_path"), PathDef);
+		Node.WidgetOrder.Add(TEXT("glb_path"));
+
+		// Output pins: MESH geometry + texture maps
+		FGraphPin OutMesh;
+		OutMesh.Name = TEXT("MESH"); OutMesh.Type = TEXT("MESH");
+		OutMesh.bIsInput = false; OutMesh.PinIndex = 0; OutMesh.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutMesh);
+
+		FGraphPin OutColor;
+		OutColor.Name = TEXT("DIFFUSE"); OutColor.Type = TEXT("IMAGE");
+		OutColor.bIsInput = false; OutColor.PinIndex = 1; OutColor.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutColor);
+
+		FGraphPin OutSpecular;
+		OutSpecular.Name = TEXT("ORM"); OutSpecular.Type = TEXT("IMAGE");
+		OutSpecular.bIsInput = false; OutSpecular.PinIndex = 2; OutSpecular.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutSpecular);
+
+		FGraphPin OutNormal;
+		OutNormal.Name = TEXT("NORMAL"); OutNormal.Type = TEXT("IMAGE");
+		OutNormal.bIsInput = false; OutNormal.PinIndex = 3; OutNormal.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutNormal);
+	}
+	else if (UEClassType == UEGLBExtractClassType)
+	{
+		Node.Title = TEXT("UE GLB Extract");
+		Node.HeaderColor = FLinearColor(0.45f, 0.55f, 0.35f);
+
+		// Widget: glb_path — file path to the input GLB
+		Node.WidgetValues.Add(TEXT("glb_path"), TEXT(""));
+		FComfyInputDef PathDef;
+		PathDef.Name = TEXT("glb_path");
+		PathDef.Type = TEXT("STRING");
+		PathDef.DefaultString = TEXT("");
+		Node.WidgetInputDefs.Add(TEXT("glb_path"), PathDef);
+		Node.WidgetOrder.Add(TEXT("glb_path"));
+
+		// Output pins: MESH geometry reference + PBR texture maps as IMAGEs
+		FGraphPin OutMesh;
+		OutMesh.Name = TEXT("MESH"); OutMesh.Type = TEXT("MESH");
+		OutMesh.bIsInput = false; OutMesh.PinIndex = 0; OutMesh.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutMesh);
+
+		FGraphPin OutColor;
+		OutColor.Name = TEXT("DIFFUSE"); OutColor.Type = TEXT("IMAGE");
+		OutColor.bIsInput = false; OutColor.PinIndex = 1; OutColor.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutColor);
+
+		FGraphPin OutSpecular;
+		OutSpecular.Name = TEXT("ORM"); OutSpecular.Type = TEXT("IMAGE");
+		OutSpecular.bIsInput = false; OutSpecular.PinIndex = 2; OutSpecular.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutSpecular);
+
+		FGraphPin OutNormal;
+		OutNormal.Name = TEXT("NORMAL"); OutNormal.Type = TEXT("IMAGE");
+		OutNormal.bIsInput = false; OutNormal.PinIndex = 3; OutNormal.OwnerNodeId = Id;
+		Node.OutputPins.Add(OutNormal);
+	}
+	else if (UEClassType == UEGLBRepackClassType)
+	{
+		Node.Title = TEXT("UE GLB Repack");
+		Node.HeaderColor = FLinearColor(0.35f, 0.50f, 0.55f);
+
+		// Widget: output_suffix — suffix appended to the output GLB filename
+		Node.WidgetValues.Add(TEXT("output_suffix"), TEXT("_upscaled"));
+		FComfyInputDef SuffixDef;
+		SuffixDef.Name = TEXT("output_suffix");
+		SuffixDef.Type = TEXT("STRING");
+		SuffixDef.DefaultString = TEXT("_upscaled");
+		Node.WidgetInputDefs.Add(TEXT("output_suffix"), SuffixDef);
+		Node.WidgetOrder.Add(TEXT("output_suffix"));
+
+		// Widget: repack_uvs — run xatlas UV repacking before saving
+		Node.WidgetValues.Add(TEXT("repack_uvs"), TEXT("false"));
+		FComfyInputDef RepackUVDef;
+		RepackUVDef.Name = TEXT("repack_uvs");
+		RepackUVDef.Type = TEXT("BOOLEAN");
+		RepackUVDef.DefaultString = TEXT("false");
+		Node.WidgetInputDefs.Add(TEXT("repack_uvs"), RepackUVDef);
+		Node.WidgetOrder.Add(TEXT("repack_uvs"));
+
+		// Widget: upres_scale — upscale multiplier applied after UV repack
+		Node.WidgetValues.Add(TEXT("upres_scale"), TEXT("1x"));
+		FComfyInputDef UpresScaleDef;
+		UpresScaleDef.Name = TEXT("upres_scale");
+		UpresScaleDef.Type = TEXT("COMBO");
+		UpresScaleDef.ComboOptions = { TEXT("1x"), TEXT("2x"), TEXT("4x") };
+		UpresScaleDef.DefaultString = TEXT("1x");
+		Node.WidgetInputDefs.Add(TEXT("upres_scale"), UpresScaleDef);
+		Node.WidgetOrder.Add(TEXT("upres_scale"));
+
+		// Input pins: MESH geometry + upscaled texture maps
+		FGraphPin InMesh;
+		InMesh.Name = TEXT("MESH"); InMesh.Type = TEXT("MESH");
+		InMesh.bIsInput = true; InMesh.PinIndex = 0; InMesh.OwnerNodeId = Id;
+		Node.InputPins.Add(InMesh);
+
+		FGraphPin InColor;
+		InColor.Name = TEXT("DIFFUSE"); InColor.Type = TEXT("IMAGE");
+		InColor.bIsInput = true; InColor.PinIndex = 1; InColor.OwnerNodeId = Id;
+		Node.InputPins.Add(InColor);
+
+		FGraphPin InSpecular;
+		InSpecular.Name = TEXT("ORM"); InSpecular.Type = TEXT("IMAGE");
+		InSpecular.bIsInput = true; InSpecular.PinIndex = 2; InSpecular.OwnerNodeId = Id;
+		Node.InputPins.Add(InSpecular);
+
+		FGraphPin InNormal;
+		InNormal.Name = TEXT("NORMAL"); InNormal.Type = TEXT("IMAGE");
+		InNormal.bIsInput = true; InNormal.PinIndex = 3; InNormal.OwnerNodeId = Id;
+		Node.InputPins.Add(InNormal);
 	}
 
 	ComputeNodeSize(Node);
@@ -3500,7 +3629,9 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildNodeCategoryMenu(FVector2D GraphP
 			{ UEPromptAdherenceClassType, TEXT("UE Prompt Adherence"), TEXT("Controls how closely the generation follows the prompt vs. AI creativity. Lower values = closer to prompt, higher values = more creative. Overrides CFG/steps/denoise on all KSampler nodes in the graph.") },
 			{ UEImageUpresClassType, TEXT("UE Image Upres"), TEXT("Upscales an image using configurable interpolation (nearest, bilinear, bicubic, lanczos, area) and converts between 8-bit and 16-bit colour depth. Maps to ImageScaleBy + a bit-depth conversion pass in ComfyUI.") },
 			{ UESequenceClassType, TEXT("UE Sequence"), TEXT("Executes downstream nodes in stages — all nodes connected to Then 0 complete before Then 1 starts, and so on. Like Blueprint Sequence nodes.") },
-			{ UEVideoToImageClassType, TEXT("UE Video to Image"), TEXT("Extracts a single frame from a video file (using FFmpeg) and outputs it as an IMAGE. Browse for a video, choose the frame number, and connect downstream to any node expecting an image input.") }
+			{ UEVideoToImageClassType, TEXT("UE Video to Image"), TEXT("Extracts a single frame from a video file (using FFmpeg) and outputs it as an IMAGE. Browse for a video, choose the frame number, and connect downstream to any node expecting an image input.") },
+			{ UEGLBExtractClassType, TEXT("UE GLB Extract"), TEXT("Loads a GLB 3D model and outputs its geometry (MESH) and PBR texture maps (DIFFUSE, ORM, NORMAL) as separate IMAGE pins. Connect outputs to any upscale or processing node.") },
+			{ UEGLBRepackClassType, TEXT("UE GLB Repack"), TEXT("Takes a MESH reference and upscaled/processed texture maps (DIFFUSE, ORM, NORMAL) as inputs and repacks them into a new GLB file.") }
 		};
 
 		for (const FUENodeEntry& Entry : UENodes)
@@ -3604,21 +3735,7 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildNodeCategoryMenu(FVector2D GraphP
 				FText::GetEmpty(),
 				FNewMenuDelegate::CreateLambda([this, Child, GraphPos, PopulateMenuPtr](FMenuBuilder& SubMenu)
 				{
-					// First, add any direct nodes at this level
-					for (const FComfyNodeDef* Def : Child->Nodes)
-					{
-						SubMenu.AddMenuEntry(
-							FText::FromString(Def->DisplayName),
-							FText::FromString(Def->ClassType),
-							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateLambda([this, ClassType = Def->ClassType, GraphPos]()
-							{
-								AddNodeByType(ClassType, GraphPos);
-							}))
-						);
-					}
-
-					// Then, add child category submenus
+					// Recursively populate child submenus and leaf nodes
 					(*PopulateMenuPtr)(SubMenu, Child);
 				})
 			);
@@ -3687,7 +3804,9 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildFilteredNodeMenu(FVector2D GraphP
 		{ UEPromptAdherenceClassType, TEXT("UE Prompt Adherence"), TEXT(""), TEXT("") },
 		{ UEImageUpresClassType, TEXT("UE Image Upres"), TEXT("IMAGE"), TEXT("IMAGE") },
 		{ UESequenceClassType, TEXT("UE Sequence"), TEXT("*"), TEXT("") },
-		{ UEVideoToImageClassType, TEXT("UE Video to Image"), TEXT(""), TEXT("IMAGE") }
+		{ UEVideoToImageClassType, TEXT("UE Video to Image"), TEXT(""), TEXT("IMAGE") },
+		{ UEGLBExtractClassType, TEXT("UE GLB Extract"), TEXT(""), TEXT("IMAGE,MESH") },
+		{ UEGLBRepackClassType, TEXT("UE GLB Repack"), TEXT("IMAGE,MESH"), TEXT("") }
 	};
 
 	bool bHasUEEntries = false;
@@ -3869,42 +3988,7 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildFilteredNodeMenu(FVector2D GraphP
 					[this, Child, GraphPos, SourceNodeId, SourcePinIndex, bFromOutput, PopulateFilteredPtr]
 					(FMenuBuilder& SubMenu)
 				{
-					// Add direct nodes at this level
-					for (const FCompatibleEntry& E : Child->Nodes)
-					{
-						FString ClassType = E.Def->ClassType;
-						FString MatchedPin = E.MatchedPinName;
-						int32 MatchedIdx = E.MatchedPinIndex;
-
-						SubMenu.AddMenuEntry(
-							FText::FromString(E.Def->DisplayName),
-							FText::FromString(ClassType),
-							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateLambda(
-								[this, ClassType, GraphPos, SourceNodeId, SourcePinIndex,
-								 bFromOutput, MatchedPin, MatchedIdx]()
-							{
-								FString NewNodeId = AddNodeByType(ClassType, GraphPos);
-								if (NewNodeId.IsEmpty()) return;
-
-								if (bFromOutput)
-								{
-									AddConnection(SourceNodeId, SourcePinIndex, NewNodeId, MatchedPin);
-								}
-								else
-								{
-									const int32* SrcIdx = NodeIndexMap.Find(SourceNodeId);
-									if (SrcIdx && SourcePinIndex < Nodes[*SrcIdx].InputPins.Num())
-									{
-										FString InputName = Nodes[*SrcIdx].InputPins[SourcePinIndex].Name;
-										AddConnection(NewNodeId, MatchedIdx, SourceNodeId, InputName);
-									}
-								}
-							}))
-						);
-					}
-
-					// Then recurse into child categories
+					// Recursively populate child submenus and leaf nodes
 					(*PopulateFilteredPtr)(SubMenu, Child);
 				})
 			);
@@ -4081,6 +4165,109 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 		// Skip Meshy Import nodes — they are UE-side action nodes handled post-generation
 		if (Node.ClassType == UEMeshyImportClassType)
 		{
+			continue;
+		}
+
+		// Skip legacy Texture Upscale nodes
+		if (Node.ClassType == UETextureUpscaleClassType)
+		{
+			continue;
+		}
+
+		// GLB Extract -> emit one LoadImage per texture output pin (DIFFUSE, ORM, NORMAL)
+		// The MESH pin is internal only — it's resolved by the Repack node at execution time.
+		if (Node.ClassType == UEGLBExtractClassType)
+		{
+			for (const FGraphPin& Pin : Node.OutputPins)
+			{
+				if (Pin.Type != TEXT("IMAGE")) continue;
+
+				// Emit a LoadImage node with a marker filename
+				FString MarkerId = UEGLBTextureMarkerPrefix + Node.Id + TEXT("_") + Pin.Name;
+				FString VirtualId = Node.Id + TEXT("_") + FString::FromInt(Pin.PinIndex);
+
+				TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
+				NodeObj->SetStringField(TEXT("class_type"), TEXT("LoadImage"));
+
+				TSharedPtr<FJsonObject> MetaObj = MakeShareable(new FJsonObject);
+				MetaObj->SetStringField(TEXT("title"), Node.Title + TEXT(" - ") + Pin.Name);
+				MetaObj->SetStringField(TEXT("ue_glb_extract_node"), Node.Id);
+				MetaObj->SetStringField(TEXT("ue_glb_pin"), Pin.Name);
+				NodeObj->SetObjectField(TEXT("_meta"), MetaObj);
+
+				TSharedPtr<FJsonObject> InputsObj = MakeShareable(new FJsonObject);
+				InputsObj->SetStringField(TEXT("image"), MarkerId);
+				NodeObj->SetObjectField(TEXT("inputs"), InputsObj);
+
+				Workflow->SetObjectField(VirtualId, NodeObj);
+			}
+			continue;
+		}
+
+		// GLB Repack -> emit a SaveImage for each IMAGE input pin that has a connection.
+		// The saved images are downloaded post-generation to repack into the GLB.
+		if (Node.ClassType == UEGLBRepackClassType)
+		{
+			for (const FGraphPin& Pin : Node.InputPins)
+			{
+				if (Pin.Type != TEXT("IMAGE")) continue;
+
+				// Find the connection feeding this input pin from the Connections array
+				const FGraphConnection* PinConn = nullptr;
+				for (const FGraphConnection& Conn : Connections)
+				{
+					if (Conn.TargetNodeId == Node.Id && Conn.TargetInputName == Pin.Name)
+					{
+						PinConn = &Conn;
+						break;
+					}
+				}
+				if (!PinConn) continue; // Skip unconnected pins
+
+				FString SaveNodeId = Node.Id + TEXT("_save_") + Pin.Name;
+
+				TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
+				NodeObj->SetStringField(TEXT("class_type"), TEXT("SaveImage"));
+
+				TSharedPtr<FJsonObject> MetaObj = MakeShareable(new FJsonObject);
+				MetaObj->SetStringField(TEXT("title"), TEXT("GLB Repack - ") + Pin.Name);
+				MetaObj->SetStringField(TEXT("ue_glb_repack_node"), Node.Id);
+				MetaObj->SetStringField(TEXT("ue_glb_pin"), Pin.Name);
+				NodeObj->SetObjectField(TEXT("_meta"), MetaObj);
+
+				TSharedPtr<FJsonObject> InputsObj = MakeShareable(new FJsonObject);
+				InputsObj->SetStringField(TEXT("filename_prefix"),
+					FString::Printf(TEXT("ViewGen_GLBRepack_%s_%s"), *Node.Id, *Pin.Name));
+
+				// Link the images input to the upstream source
+				// Resolve the source — it could be a regular node or a GLB Extract virtual node
+				FString SourceNodeId = PinConn->SourceNodeId;
+				int32 SourcePinIndex = PinConn->SourceOutputIndex;
+
+				// Resolve through reroute nodes if needed
+				ResolveRerouteSource(SourceNodeId, SourceNodeId, SourcePinIndex);
+
+				// If the source is a GLB Extract node, redirect to the virtual LoadImage node
+				const FGraphNode* SourceNode = nullptr;
+				for (const FGraphNode& SN : Nodes)
+				{
+					if (SN.Id == SourceNodeId) { SourceNode = &SN; break; }
+				}
+				if (SourceNode && SourceNode->ClassType == UEGLBExtractClassType && SourcePinIndex > 0)
+				{
+					// Virtual node IDs are: extractNodeId + "_" + pinIndex
+					SourceNodeId = SourceNode->Id + TEXT("_") + FString::FromInt(SourcePinIndex);
+					SourcePinIndex = 0; // LoadImage output index
+				}
+
+				TArray<TSharedPtr<FJsonValue>> ImagesLink;
+				ImagesLink.Add(MakeShareable(new FJsonValueString(SourceNodeId)));
+				ImagesLink.Add(MakeShareable(new FJsonValueNumber(SourcePinIndex)));
+				InputsObj->SetArrayField(TEXT("images"), ImagesLink);
+
+				NodeObj->SetObjectField(TEXT("inputs"), InputsObj);
+				Workflow->SetObjectField(SaveNodeId, NodeObj);
+			}
 			continue;
 		}
 
@@ -4553,8 +4740,17 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 		{
 			FString Value = Widget.Value;
 
+			// COMBO inputs must always be sent as strings — even if the value looks numeric
+			// (e.g. Hunyuan3D model "3.0" must not be coerced to number 3)
+			const FComfyInputDef* WidgetDef = Node.WidgetInputDefs.Find(Widget.Key);
+			bool bIsCombo = WidgetDef && (WidgetDef->Type == TEXT("COMBO") || WidgetDef->Type.Contains(TEXT("COMBO")));
+
+			if (bIsCombo)
+			{
+				InputsObj->SetStringField(Widget.Key, Value);
+			}
 			// Try to detect numeric values
-			if (Value.IsNumeric())
+			else if (Value.IsNumeric())
 			{
 				double NumVal = FCString::Atod(*Value);
 				// Check if it's an integer
@@ -4734,7 +4930,20 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 				int32 RealOutputIndex = Conn.SourceOutputIndex;
 				ResolveRerouteSource(Conn.SourceNodeId, RealSourceId, RealOutputIndex);
 
-
+				// Redirect GLB Extract outputs to virtual LoadImage nodes
+				{
+					const FGraphNode* SourceNode = nullptr;
+					for (const FGraphNode& SN : Nodes)
+					{
+						if (SN.Id == RealSourceId) { SourceNode = &SN; break; }
+					}
+					if (SourceNode && SourceNode->ClassType == UEGLBExtractClassType && RealOutputIndex > 0)
+					{
+						// Virtual node IDs: extractNodeId + "_" + pinIndex
+						RealSourceId = SourceNode->Id + TEXT("_") + FString::FromInt(RealOutputIndex);
+						RealOutputIndex = 0; // LoadImage always has output index 0
+					}
+				}
 
 				// ComfyUI link format: [source_node_id, source_output_index]
 				TArray<TSharedPtr<FJsonValue>> LinkArray;
@@ -5590,7 +5799,7 @@ bool SWorkflowGraphEditor::DeserializeGraph(TSharedPtr<FJsonObject> GraphJson)
 			FGraphNode Node;
 
 			// Check if this is a UE source node
-			if (ClassType == UEViewportClassType || ClassType == UEDepthMapClassType || ClassType == UECameraDataClassType || ClassType == UESegmentationClassType || ClassType == UEMeshyImportClassType || ClassType == UESave3DModelClassType || ClassType == UE3DLoaderClassType || ClassType == UEImageBridgeClassType || ClassType == UE3DAssetExportClassType || ClassType == UEPromptAdherenceClassType || ClassType == UEImageUpresClassType || ClassType == UESequenceClassType || ClassType == UEVideoToImageClassType)
+			if (ClassType == UEViewportClassType || ClassType == UEDepthMapClassType || ClassType == UECameraDataClassType || ClassType == UESegmentationClassType || ClassType == UEMeshyImportClassType || ClassType == UESave3DModelClassType || ClassType == UE3DLoaderClassType || ClassType == UEImageBridgeClassType || ClassType == UE3DAssetExportClassType || ClassType == UEPromptAdherenceClassType || ClassType == UEImageUpresClassType || ClassType == UESequenceClassType || ClassType == UEVideoToImageClassType || ClassType == UETextureUpscaleClassType || ClassType == UEGLBExtractClassType || ClassType == UEGLBRepackClassType)
 			{
 				Node = CreateUESourceNode(ClassType, NodeId, Position);
 				Node.Title = Title;

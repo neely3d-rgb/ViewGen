@@ -6,6 +6,9 @@
 #include "DepthPassRenderer.h"
 #include "GenAIHttpClient.h"
 #include "GenAISettings.h"
+#include "ViewGenGLB.h"
+#include "ViewGenUVRepack.h"
+#include "HttpManager.h"
 #include "Async/Async.h"
 #include "Containers/Ticker.h"
 
@@ -5785,6 +5788,25 @@ void SViewGenPanel::OnGenerationComplete(bool bSuccess, UTexture2D* ResultTextur
 			}
 		}
 
+		// Check if the graph has a GLB Repack node — download upscaled textures and repack
+		if (GraphEditor.IsValid())
+		{
+			bool bHasRepack = false;
+			for (const FGraphNode& Node : GraphEditor->GetNodes())
+			{
+				if (Node.ClassType == UEGLBRepackClassType)
+				{
+					bHasRepack = true;
+					break;
+				}
+			}
+			if (bHasRepack)
+			{
+				UE_LOG(LogTemp, Log, TEXT("ViewGen: GLB Repack node detected, downloading upscaled textures and repacking"));
+				ExecuteGLBRepack();
+			}
+		}
+
 		UpdateStatusText(TEXT("Generation complete!"));
 	}
 	else if (bSuccess && !ResultTexture)
@@ -6294,12 +6316,24 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 		// --- BOOLEAN (checkbox) ---
 		else if (WidgetType == TEXT("BOOLEAN") || WidgetType == TEXT("BOOL"))
 		{
-			bool bCurrentVal = (*ValuePtr == TEXT("true"));
 			NodeDetailsPanel->AddSlot()
 			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
 			[
 				SNew(SCheckBox)
-				.IsChecked(bCurrentVal ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.IsChecked_Lambda([this, CapturedNodeId, CapturedWidgetName]() -> ECheckBoxState
+				{
+					if (GraphEditor.IsValid())
+					{
+						FGraphNode* N = GraphEditor->FindNodeById(CapturedNodeId);
+						if (N)
+						{
+							const FString* V = N->WidgetValues.Find(CapturedWidgetName);
+							if (V && (*V == TEXT("true") || *V == TEXT("True")))
+								return ECheckBoxState::Checked;
+						}
+					}
+					return ECheckBoxState::Unchecked;
+				})
 				.OnCheckStateChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](ECheckBoxState NewState)
 				{
 					if (GraphEditor.IsValid())
@@ -6310,7 +6344,20 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 				})
 				[
 					SNew(STextBlock)
-					.Text(FText::FromString(bCurrentVal ? TEXT("Enabled") : TEXT("Disabled")))
+					.Text_Lambda([this, CapturedNodeId, CapturedWidgetName]() -> FText
+					{
+						if (GraphEditor.IsValid())
+						{
+							FGraphNode* N = GraphEditor->FindNodeById(CapturedNodeId);
+							if (N)
+							{
+								const FString* V = N->WidgetValues.Find(CapturedWidgetName);
+								if (V && (*V == TEXT("true") || *V == TEXT("True")))
+									return FText::FromString(TEXT("Enabled"));
+							}
+						}
+						return FText::FromString(TEXT("Disabled"));
+					})
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 				]
 			];
@@ -6441,6 +6488,168 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					})
 				]
 			];
+		}
+		// --- STRING: UE Texture Upscale "glb_path" gets a text box + Browse GLB button ---
+		else if ((Node->ClassType == UETextureUpscaleClassType || Node->ClassType == UEGLBExtractClassType) && WidgetName == TEXT("glb_path"))
+		{
+			NodeDetailsPanel->AddSlot()
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SEditableTextBox)
+					.Text(FText::FromString(*ValuePtr))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					{
+						if (GraphEditor.IsValid())
+						{
+							GraphEditor->CommitWidgetValueSilent(CapturedNodeId, CapturedWidgetName, NewText.ToString());
+						}
+					})
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SButton)
+					.Text(FText::FromString(TEXT("Browse...")))
+					.ToolTipText(FText::FromString(TEXT("Browse for a GLB 3D model file to upscale textures")))
+					.OnClicked_Lambda([this, CapturedNodeId]() -> FReply
+					{
+						OnBrowseGLBFile(CapturedNodeId);
+						return FReply::Handled();
+					})
+				]
+			];
+
+			// --- GLB Texture Info (populated by ProbeGLBTextures after Browse) ---
+			if (Node->GLBTextureInfoStrings.Num() > 0)
+			{
+				// Thumbnail preview of first texture (fit to user-adjustable height, maintain aspect ratio)
+				if (Node->ThumbnailBrush.IsValid() && Node->ThumbnailBrush->ImageSize.X > 0 && Node->ThumbnailBrush->ImageSize.Y > 0)
+				{
+					float SrcW = Node->ThumbnailBrush->ImageSize.X;
+					float SrcH = Node->ThumbnailBrush->ImageSize.Y;
+					float AspectRatio = SrcW / SrcH;
+					float DisplayH = Node->ThumbnailDisplayHeight;
+					float DisplayW = DisplayH * AspectRatio;
+
+					// --- Thumbnail + horizontal resize handle bar ---
+					// Thumbnail SBox is updated live during drag via WeakPtr; panel
+					// only rebuilds on mouse-up to finalize layout.
+					FString CapturedNodeIdForResize = CapturedNodeId;
+					TSharedPtr<SBox> ThumbBox;
+					NodeDetailsPanel->AddSlot()
+					.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					.HAlign(HAlign_Left)
+					[
+						SAssignNew(ThumbBox, SBox)
+						.WidthOverride(DisplayW)
+						.HeightOverride(DisplayH)
+						[
+							SNew(SImage)
+							.Image(Node->ThumbnailBrush.Get())
+						]
+					];
+
+					// Store a weak reference to the thumb box so the resize handle can update it live
+					TWeakPtr<SBox> WeakThumbBox = ThumbBox;
+					float CapturedAspect = AspectRatio;
+
+					NodeDetailsPanel->AddSlot()
+					.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+					.HAlign(HAlign_Left)
+					[
+						SNew(SBox)
+						.WidthOverride(DisplayW)
+						.HeightOverride(8.0f)
+						.Cursor(EMouseCursor::ResizeUpDown)
+						[
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+							.BorderBackgroundColor(FLinearColor(0.4f, 0.4f, 0.4f, 0.8f))
+							.Padding(0.0f)
+							.OnMouseButtonDown_Lambda([](const FGeometry&, const FPointerEvent& MouseEvent) -> FReply
+							{
+								if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+								{
+									return FReply::Handled().UseHighPrecisionMouseMovement(MouseEvent.GetEventPath()->Widgets.Last().Widget);
+								}
+								return FReply::Unhandled();
+							})
+							.OnMouseButtonUp_Lambda([this](const FGeometry&, const FPointerEvent& MouseEvent) -> FReply
+							{
+								if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+								{
+									// Rebuild panel to finalize layout with new height
+									RebuildNodeDetailsPanel();
+									return FReply::Handled().ReleaseMouseCapture();
+								}
+								return FReply::Unhandled();
+							})
+							.OnMouseMove_Lambda([this, CapturedNodeIdForResize, WeakThumbBox, CapturedAspect](const FGeometry&, const FPointerEvent& MouseEvent) -> FReply
+							{
+								if (MouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton))
+								{
+									if (GraphEditor.IsValid())
+									{
+										FGraphNode* N = GraphEditor->FindNodeById(CapturedNodeIdForResize);
+										if (N)
+										{
+											float Delta = MouseEvent.GetCursorDelta().Y;
+											N->ThumbnailDisplayHeight = FMath::Clamp(N->ThumbnailDisplayHeight + Delta, 50.0f, 800.0f);
+
+											// Update the thumbnail box dimensions live without rebuilding
+											TSharedPtr<SBox> Box = WeakThumbBox.Pin();
+											if (Box.IsValid())
+											{
+												Box->SetHeightOverride(N->ThumbnailDisplayHeight);
+												Box->SetWidthOverride(N->ThumbnailDisplayHeight * CapturedAspect);
+											}
+										}
+									}
+									return FReply::Handled();
+								}
+								return FReply::Unhandled();
+							})
+						]
+					];
+				}
+
+				// Texture metadata list
+				NodeDetailsPanel->AddSlot()
+				.Padding(0.0f, 2.0f, 0.0f, 2.0f)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(TEXT("Textures")))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.6f, 0.5f)))
+				];
+
+				for (const FString& InfoLine : Node->GLBTextureInfoStrings)
+				{
+					NodeDetailsPanel->AddSlot()
+					.Padding(4.0f, 1.0f, 0.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(InfoLine))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+					];
+				}
+
+				// Spacer after texture info
+				NodeDetailsPanel->AddSlot()
+				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+				[
+					SNew(SSeparator)
+				];
+			}
 		}
 		// --- STRING: UE 3D Loader "file_path" gets a text box + Browse 3D Model button ---
 		else if (Node->ClassType == UE3DLoaderClassType && WidgetName == TEXT("file_path"))
@@ -7618,6 +7827,101 @@ void SViewGenPanel::HandleVideoResult()
 	});
 }
 
+void SViewGenPanel::OnBrowseGLBFile(FString NodeId)
+{
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform) return;
+
+	const FString DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_IMPORT);
+
+	TArray<FString> OutFiles;
+	const bool bOpened = DesktopPlatform->OpenFileDialog(
+		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		TEXT("Select GLB Model for Texture Upscale"),
+		DefaultPath,
+		TEXT(""),
+		TEXT("GLB Files (*.glb)|*.glb|All Files (*.*)|*.*"),
+		EFileDialogFlags::None,
+		OutFiles
+	);
+
+	if (!bOpened || OutFiles.Num() == 0) return;
+
+	const FString FilePath = OutFiles[0];
+	FEditorDirectories::Get().SetLastDirectory(ELastDirectory::GENERIC_IMPORT, FPaths::GetPath(FilePath));
+
+	if (!GraphEditor.IsValid()) return;
+
+	// Set the glb_path widget value
+	GraphEditor->CommitWidgetValueSilent(NodeId, TEXT("glb_path"), FilePath);
+
+	// Probe the GLB for texture metadata and update the node
+	FGraphNode* Node = GraphEditor->FindNodeById(NodeId);
+	if (Node)
+	{
+		Node->GLBTextureInfoStrings.Empty();
+
+		TArray<ViewGenGLB::FTextureInfo> TexInfos;
+		TArray<uint8> ThumbPixels;
+		int32 ThumbW = 0, ThumbH = 0;
+
+		if (ViewGenGLB::ProbeGLBTextures(FilePath, TexInfos, &ThumbPixels, &ThumbW, &ThumbH))
+		{
+			for (const auto& Info : TexInfos)
+			{
+				FString SizeStr;
+				if (Info.DataSize >= 1024 * 1024)
+					SizeStr = FString::Printf(TEXT("%.1f MB"), Info.DataSize / (1024.0f * 1024.0f));
+				else
+					SizeStr = FString::Printf(TEXT("%d KB"), Info.DataSize / 1024);
+
+				Node->GLBTextureInfoStrings.Add(FString::Printf(TEXT("%s: %dx%d  (%s)"),
+					*Info.Name, Info.Width, Info.Height, *SizeStr));
+			}
+
+			// Create thumbnail from first texture
+			if (ThumbPixels.Num() > 0 && ThumbW > 0 && ThumbH > 0)
+			{
+				// Release previous thumbnail texture from root if replacing
+				if (Node->ThumbnailTexture && Node->ThumbnailTexture->IsRooted())
+				{
+					Node->ThumbnailTexture->RemoveFromRoot();
+				}
+
+				// Create a UTexture2D at full resolution — Slate handles the display scaling
+				UTexture2D* Tex = UTexture2D::CreateTransient(ThumbW, ThumbH, PF_R8G8B8A8);
+				if (Tex)
+				{
+					// Prevent GC from collecting the texture while FSlateBrush references it.
+					// Without this, the transient texture has no UPROPERTY root and GC will
+					// destroy it, causing an access violation in the Slate renderer.
+					Tex->AddToRoot();
+
+					FTexture2DMipMap& Mip = Tex->GetPlatformData()->Mips[0];
+					void* MipData = Mip.BulkData.Lock(LOCK_READ_WRITE);
+					FMemory::Memcpy(MipData, ThumbPixels.GetData(), ThumbPixels.Num());
+					Mip.BulkData.Unlock();
+					Tex->UpdateResource();
+
+					Node->ThumbnailTexture = Tex;
+					Node->ThumbnailBrush = MakeShareable(new FSlateBrush());
+					Node->ThumbnailBrush->SetResourceObject(Tex);
+					// Store original dimensions — the details panel uses these for aspect ratio
+					Node->ThumbnailBrush->ImageSize = FVector2D(ThumbW, ThumbH);
+					Node->ThumbnailBrush->DrawAs = ESlateBrushDrawType::Image;
+				}
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract: Probed %d textures from: %s"), TexInfos.Num(), *FilePath);
+		}
+	}
+
+	// Rebuild the details panel to show the updated path + texture info
+	RebuildNodeDetailsPanel();
+
+	UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Selected GLB file: %s"), *FilePath);
+}
+
 void SViewGenPanel::OnBrowse3DModelFile(FString NodeId)
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
@@ -8049,8 +8353,133 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 
 	if (!Workflow.IsValid() || Workflow->Values.Num() == 0)
 	{
+		// Check if we have UE-only nodes that don't produce ComfyUI workflow
+		// (e.g., __UE_TextureUpscale__ which is self-contained)
+		bool bHasTextureUpscale = false;
+		for (const FGraphNode& Node : GraphEditor->GetNodes())
+		{
+			if (Node.ClassType == UETextureUpscaleClassType)
+			{
+				bHasTextureUpscale = true;
+				break;
+			}
+		}
+
+		if (bHasTextureUpscale)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: No ComfyUI workflow nodes, but Texture Upscale node found — executing standalone"));
+			ExecuteTextureUpscale();
+			return FReply::Handled();
+		}
+
+		// Check for GLB Extract+Repack with direct connections (UV repack only — no ComfyUI needed)
+		bool bHasGLBRepackDirect = false;
+		for (const FGraphNode& Node : GraphEditor->GetNodes())
+		{
+			if (Node.ClassType == UEGLBRepackClassType)
+			{
+				bHasGLBRepackDirect = true;
+				break;
+			}
+		}
+		if (bHasGLBRepackDirect)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: No ComfyUI workflow nodes, but GLB Repack found — executing standalone UV repack"));
+
+			// Load GLB documents from Extract nodes (without uploading to ComfyUI)
+			for (const FGraphNode& ExtNode : GraphEditor->GetNodes())
+			{
+				if (ExtNode.ClassType != UEGLBExtractClassType) continue;
+
+				const FString* PathVal = ExtNode.WidgetValues.Find(TEXT("glb_path"));
+				FString GLBPath = PathVal ? *PathVal : FString();
+				if (GLBPath.IsEmpty() || !FPaths::FileExists(GLBPath))
+				{
+					UpdateStatusText(GLBPath.IsEmpty()
+						? TEXT("GLB Extract: No GLB file path specified")
+						: FString::Printf(TEXT("GLB Extract: File not found: %s"), *FPaths::GetCleanFilename(GLBPath)));
+					return FReply::Handled();
+				}
+
+				UpdateStatusText(TEXT("GLB Extract: Loading GLB file..."));
+				ViewGenGLB::FGLBDocument GLBDoc;
+				if (!ViewGenGLB::LoadGLB(GLBPath, GLBDoc))
+				{
+					UpdateStatusText(TEXT("GLB Extract: Failed to load GLB file"));
+					return FReply::Handled();
+				}
+				UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract (standalone): Loaded %d textures from %s"), GLBDoc.Textures.Num(), *GLBPath);
+				LoadedGLBDocuments.Add(ExtNode.Id, MakeShared<ViewGenGLB::FGLBDocument>(MoveTemp(GLBDoc)));
+			}
+
+			ExecuteGLBRepack();
+			return FReply::Handled();
+		}
+
 		UpdateStatusText(TEXT("Graph is empty — add some nodes first"));
 		return FReply::Handled();
+	}
+
+	// ---- Check for GLB-only workflow (Extract→Repack with no ComfyUI processing) ----
+	// If the workflow only contains GLB virtual nodes (LoadImage markers + SaveImage for repack),
+	// bypass ComfyUI entirely and run the repack pipeline standalone.
+	{
+		bool bAllNodesAreGLBVirtual = true;
+		for (const auto& WFPair : Workflow->Values)
+		{
+			TSharedPtr<FJsonObject> WFNode = WFPair.Value->AsObject();
+			if (!WFNode.IsValid()) continue;
+
+			// Check _meta for GLB markers
+			const TSharedPtr<FJsonObject>* MetaPtr;
+			if (WFNode->TryGetObjectField(TEXT("_meta"), MetaPtr) && MetaPtr)
+			{
+				FString Tmp;
+				if ((*MetaPtr)->TryGetStringField(TEXT("ue_glb_extract_node"), Tmp) ||
+					(*MetaPtr)->TryGetStringField(TEXT("ue_glb_repack_node"), Tmp))
+				{
+					continue; // This is a GLB virtual node — skip
+				}
+			}
+
+			// Not a GLB virtual node — real ComfyUI node exists
+			bAllNodesAreGLBVirtual = false;
+			break;
+		}
+
+		if (bAllNodesAreGLBVirtual && Workflow->Values.Num() > 0)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: Workflow contains only GLB virtual nodes — executing standalone UV repack"));
+
+			// Load GLB documents from Extract nodes
+			for (const FGraphNode& ExtNode : GraphEditor->GetNodes())
+			{
+				if (ExtNode.ClassType != UEGLBExtractClassType) continue;
+
+				const FString* PathVal = ExtNode.WidgetValues.Find(TEXT("glb_path"));
+				FString GLBPathStandalone = PathVal ? *PathVal : FString();
+				if (GLBPathStandalone.IsEmpty() || !FPaths::FileExists(GLBPathStandalone))
+				{
+					UpdateStatusText(GLBPathStandalone.IsEmpty()
+						? TEXT("GLB Extract: No GLB file path specified")
+						: FString::Printf(TEXT("GLB Extract: File not found: %s"), *FPaths::GetCleanFilename(GLBPathStandalone)));
+					return FReply::Handled();
+				}
+
+				UpdateStatusText(TEXT("GLB Extract: Loading GLB file..."));
+				ViewGenGLB::FGLBDocument GLBDoc;
+				if (!ViewGenGLB::LoadGLB(GLBPathStandalone, GLBDoc))
+				{
+					UpdateStatusText(TEXT("GLB Extract: Failed to load GLB file"));
+					return FReply::Handled();
+				}
+				UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract (standalone): Loaded %d textures from %s"), GLBDoc.Textures.Num(), *GLBPathStandalone);
+				LoadedGLBDocuments.Add(ExtNode.Id, MakeShared<ViewGenGLB::FGLBDocument>(MoveTemp(GLBDoc)));
+			}
+
+			ExecuteGLBRepack();
+			return FReply::Handled();
+		}
 	}
 
 	// ---- Resolve UE source node markers ----
@@ -8288,6 +8717,24 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 
 			UE_LOG(LogTemp, Log, TEXT("ViewGen: Video to Image node '%s': extracted frame %d from '%s' → uploaded as '%s'"),
 				*VNode.Id, FrameNum, *FPaths::GetCleanFilename(VNode.LocalFilePath), *ServerFilename);
+		}
+	}
+
+	// Resolve GLB Extract nodes — upload GLB textures and replace markers
+	if (GraphEditor.IsValid())
+	{
+		bool bHasGLBExtract = false;
+		for (const FGraphNode& GNode : GraphEditor->GetNodes())
+		{
+			if (GNode.ClassType == UEGLBExtractClassType) { bHasGLBExtract = true; break; }
+		}
+		if (bHasGLBExtract)
+		{
+			if (!ResolveGLBExtractNodes(Workflow))
+			{
+				// Error already reported in ResolveGLBExtractNodes
+				return FReply::Handled();
+			}
 		}
 	}
 
@@ -11472,6 +11919,946 @@ void SViewGenPanel::ExecuteImageUpresExport()
 			UpdateStatusText(TEXT("Image Upres: PNG encoding failed"));
 		}
 	}
+}
+
+// ============================================================================
+// UE Texture Upscale — standalone GLB texture upscale via ComfyUI
+// ============================================================================
+
+void SViewGenPanel::ExecuteTextureUpscale()
+{
+	if (!GraphEditor.IsValid() || !HttpClient.IsValid())
+	{
+		UpdateStatusText(TEXT("Graph editor or HTTP client not available"));
+		return;
+	}
+
+	// Find the first __UE_TextureUpscale__ node in the graph
+	const TArray<FGraphNode>& GraphNodes = GraphEditor->GetNodes();
+	const FGraphNode* UpscaleNode = nullptr;
+	for (const FGraphNode& Node : GraphNodes)
+	{
+		if (Node.ClassType == UETextureUpscaleClassType)
+		{
+			UpscaleNode = &Node;
+			break;
+		}
+	}
+	if (!UpscaleNode)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: No UE Texture Upscale node found in graph"));
+		return;
+	}
+
+	// Read settings from the node widgets
+	FString GLBPath;
+	int32 ScaleFactor = 2;
+	FString UpscaleModelName = TEXT("RealESRGAN_x4plus.pth");
+	FString OutputSuffix = TEXT("_upscaled");
+
+	const FString* PathVal = UpscaleNode->WidgetValues.Find(TEXT("glb_path"));
+	if (PathVal && !PathVal->IsEmpty()) GLBPath = *PathVal;
+	const FString* ScaleVal = UpscaleNode->WidgetValues.Find(TEXT("scale_factor"));
+	if (ScaleVal) ScaleFactor = FCString::Atoi(**ScaleVal);
+	const FString* ModelVal = UpscaleNode->WidgetValues.Find(TEXT("upscale_model"));
+	if (ModelVal && !ModelVal->IsEmpty()) UpscaleModelName = *ModelVal;
+	const FString* SuffixVal = UpscaleNode->WidgetValues.Find(TEXT("output_suffix"));
+	if (SuffixVal && !SuffixVal->IsEmpty()) OutputSuffix = *SuffixVal;
+
+	// Validate the upscale model is actually available on the ComfyUI server
+	{
+		const FComfyNodeDef* UpscaleLoaderDef = FComfyNodeDatabase::Get().FindNode(TEXT("UpscaleModelLoader"));
+		if (UpscaleLoaderDef)
+		{
+			TArray<FString> AvailableModels;
+			for (const FComfyInputDef& Input : UpscaleLoaderDef->Inputs)
+			{
+				if (Input.Name == TEXT("model_name"))
+				{
+					AvailableModels = Input.ComboOptions;
+					break;
+				}
+			}
+
+			if (AvailableModels.Num() == 0)
+			{
+				UpdateStatusText(TEXT("Texture Upscale: No upscale models installed in ComfyUI. Place .pth files in ComfyUI/models/upscale_models/"));
+				UE_LOG(LogTemp, Error, TEXT("ViewGen TextureUpscale: UpscaleModelLoader has no models available. "
+					"Install upscale models (e.g. RealESRGAN_x4plus.pth) into ComfyUI/models/upscale_models/ and restart ComfyUI."));
+				return;
+			}
+
+			if (!AvailableModels.Contains(UpscaleModelName))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Selected model '%s' not found on server. Available: %s"),
+					*UpscaleModelName, *FString::Join(AvailableModels, TEXT(", ")));
+				// Auto-select the first available model
+				UpscaleModelName = AvailableModels[0];
+				UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Auto-selected model '%s'"), *UpscaleModelName);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: UpscaleModelLoader not found in ComfyUI node database. "
+				"Make sure ComfyUI is connected and has the UpscaleModelLoader node available."));
+		}
+	}
+
+	// Validate GLB path
+	if (GLBPath.IsEmpty())
+	{
+		UpdateStatusText(TEXT("Texture Upscale: No GLB file path specified"));
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: glb_path is empty"));
+		return;
+	}
+	if (!FPaths::FileExists(GLBPath))
+	{
+		UpdateStatusText(FString::Printf(TEXT("Texture Upscale: GLB file not found: %s"), *GLBPath));
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: File not found: %s"), *GLBPath);
+		return;
+	}
+
+	// Load the GLB
+	UpdateStatusText(TEXT("Texture Upscale: Loading GLB file..."));
+	UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Loading GLB from %s"), *GLBPath);
+
+	ViewGenGLB::FGLBDocument GLBDoc;
+	if (!ViewGenGLB::LoadGLB(GLBPath, GLBDoc))
+	{
+		UpdateStatusText(TEXT("Texture Upscale: Failed to load GLB file"));
+		UE_LOG(LogTemp, Error, TEXT("ViewGen TextureUpscale: LoadGLB failed for %s"), *GLBPath);
+		return;
+	}
+
+	if (GLBDoc.Textures.Num() == 0)
+	{
+		UpdateStatusText(TEXT("Texture Upscale: GLB contains no textures"));
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: No textures found in GLB"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Found %d textures in GLB"), GLBDoc.Textures.Num());
+
+	const UGenAISettings* Settings = UGenAISettings::Get();
+	FString BaseURL = Settings->APIEndpointURL;
+
+	// Process each texture: upload → build upscale workflow → submit → poll → download
+	int32 SuccessCount = 0;
+	int32 TotalTextures = GLBDoc.Textures.Num();
+
+	for (int32 TexIdx = 0; TexIdx < TotalTextures; ++TexIdx)
+	{
+		const ViewGenGLB::FTextureImage& TexImage = GLBDoc.Textures[TexIdx];
+		FString TexName = TexImage.Name.IsEmpty() ? FString::Printf(TEXT("texture_%d"), TexIdx) : TexImage.Name;
+
+		UpdateStatusText(FString::Printf(TEXT("Texture Upscale: Processing %s (%d/%d)..."),
+			*TexName, TexIdx + 1, TotalTextures));
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Processing texture '%s' (%d/%d, %d bytes, %s)"),
+			*TexName, TexIdx + 1, TotalTextures, TexImage.ImageData.Num(), *TexImage.MimeType);
+
+		// 1. Upload the raw image bytes to ComfyUI via /upload/image
+		FString UploadFilename = FString::Printf(TEXT("viewgen_upscale_%s.%s"),
+			*TexName, TexImage.MimeType.Contains(TEXT("png")) ? TEXT("png") : TEXT("jpg"));
+		FString ServerFilename;
+
+		// Use UploadRawFile for direct byte upload (handles both PNG and JPEG)
+		if (!HttpClient->UploadRawFile(TexImage.ImageData, UploadFilename,
+			TexImage.MimeType, ServerFilename))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Failed to upload texture '%s' to ComfyUI"),
+				*TexName);
+			continue;
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Uploaded '%s' as '%s'"),
+			*TexName, *ServerFilename);
+
+		// 2. Build the upscale workflow
+		// Nodes: LoadImage → ImageUpscaleWithModel ← UpscaleModelLoader
+		//         ImageUpscaleWithModel → SaveImage
+		TSharedPtr<FJsonObject> Workflow = MakeShareable(new FJsonObject);
+
+		// Node 1: UpscaleModelLoader
+		{
+			TSharedPtr<FJsonObject> Node = MakeShareable(new FJsonObject);
+			Node->SetStringField(TEXT("class_type"), TEXT("UpscaleModelLoader"));
+			TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
+			Inputs->SetStringField(TEXT("model_name"), UpscaleModelName);
+			Node->SetObjectField(TEXT("inputs"), Inputs);
+			Workflow->SetObjectField(TEXT("1"), Node);
+		}
+
+		// Node 2: LoadImage
+		{
+			TSharedPtr<FJsonObject> Node = MakeShareable(new FJsonObject);
+			Node->SetStringField(TEXT("class_type"), TEXT("LoadImage"));
+			TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
+			Inputs->SetStringField(TEXT("image"), ServerFilename);
+			Node->SetObjectField(TEXT("inputs"), Inputs);
+			Workflow->SetObjectField(TEXT("2"), Node);
+		}
+
+		// Node 3: ImageUpscaleWithModel
+		{
+			TSharedPtr<FJsonObject> Node = MakeShareable(new FJsonObject);
+			Node->SetStringField(TEXT("class_type"), TEXT("ImageUpscaleWithModel"));
+			TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
+
+			// upscale_model input: link to node 1, output 0
+			TArray<TSharedPtr<FJsonValue>> ModelLink;
+			ModelLink.Add(MakeShareable(new FJsonValueString(TEXT("1"))));
+			ModelLink.Add(MakeShareable(new FJsonValueNumber(0)));
+			Inputs->SetArrayField(TEXT("upscale_model"), ModelLink);
+
+			// image input: link to node 2, output 0
+			TArray<TSharedPtr<FJsonValue>> ImageLink;
+			ImageLink.Add(MakeShareable(new FJsonValueString(TEXT("2"))));
+			ImageLink.Add(MakeShareable(new FJsonValueNumber(0)));
+			Inputs->SetArrayField(TEXT("image"), ImageLink);
+
+			Node->SetObjectField(TEXT("inputs"), Inputs);
+			Workflow->SetObjectField(TEXT("3"), Node);
+		}
+
+		// Node 4: SaveImage
+		{
+			TSharedPtr<FJsonObject> Node = MakeShareable(new FJsonObject);
+			Node->SetStringField(TEXT("class_type"), TEXT("SaveImage"));
+			TSharedPtr<FJsonObject> Inputs = MakeShareable(new FJsonObject);
+			Inputs->SetStringField(TEXT("filename_prefix"),
+				FString::Printf(TEXT("ViewGen_Upscale_%s"), *TexName));
+
+			// images input: link to node 3, output 0
+			TArray<TSharedPtr<FJsonValue>> ImagesLink;
+			ImagesLink.Add(MakeShareable(new FJsonValueString(TEXT("3"))));
+			ImagesLink.Add(MakeShareable(new FJsonValueNumber(0)));
+			Inputs->SetArrayField(TEXT("images"), ImagesLink);
+
+			Node->SetObjectField(TEXT("inputs"), Inputs);
+			Workflow->SetObjectField(TEXT("4"), Node);
+		}
+
+		// 3. Submit the workflow synchronously and wait for completion
+		FString PromptURL = BaseURL / TEXT("prompt");
+
+		TSharedPtr<FJsonObject> Payload = MakeShareable(new FJsonObject);
+		Payload->SetObjectField(TEXT("prompt"), Workflow);
+		Payload->SetStringField(TEXT("client_id"), TEXT("viewgen_upscale"));
+
+		FString PayloadString;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadString);
+		FJsonSerializer::Serialize(Payload.ToSharedRef(), Writer);
+
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Submitting upscale workflow for '%s'"), *TexName);
+
+		// Synchronous prompt submission
+		FString PromptId;
+		{
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+			Request->SetURL(PromptURL);
+			Request->SetVerb(TEXT("POST"));
+			Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+			Request->SetContentAsString(PayloadString);
+			Request->SetTimeout(60.0f);
+
+			bool bCompleted = false;
+			bool bSuccess = false;
+			FString ResponseBody;
+
+			Request->OnProcessRequestComplete().BindLambda(
+				[&bCompleted, &bSuccess, &ResponseBody](FHttpRequestPtr Req, FHttpResponsePtr Resp, bool bConnected)
+				{
+					bCompleted = true;
+					if (bConnected && Resp.IsValid() && Resp->GetResponseCode() == 200)
+					{
+						bSuccess = true;
+						ResponseBody = Resp->GetContentAsString();
+					}
+					else if (Resp.IsValid())
+					{
+						UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Prompt submit HTTP %d: %s"),
+							Resp->GetResponseCode(), *Resp->GetContentAsString().Left(500));
+					}
+				});
+
+			Request->ProcessRequest();
+			double StartTime = FPlatformTime::Seconds();
+			while (!bCompleted && (FPlatformTime::Seconds() - StartTime) < 60.0)
+			{
+				FPlatformProcess::Sleep(0.05f);
+				FHttpModule::Get().GetHttpManager().Tick(0.05f);
+			}
+
+			if (!bSuccess)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Failed to submit upscale workflow for '%s'"), *TexName);
+				continue;
+			}
+
+			// Parse prompt_id
+			TSharedPtr<FJsonObject> JsonResp;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseBody);
+			if (FJsonSerializer::Deserialize(Reader, JsonResp) && JsonResp.IsValid())
+			{
+				PromptId = JsonResp->GetStringField(TEXT("prompt_id"));
+			}
+			if (PromptId.IsEmpty())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Empty prompt_id for '%s'"), *TexName);
+				continue;
+			}
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Prompt submitted for '%s', prompt_id=%s"), *TexName, *PromptId);
+
+		// 4. Poll /history/{prompt_id} until the job completes
+		FString HistoryURL = BaseURL / TEXT("history") / PromptId;
+		FString OutputFilename;
+		FString OutputSubfolder;
+		{
+			double PollStart = FPlatformTime::Seconds();
+			double PollTimeout = 300.0; // 5 minutes per texture
+			bool bJobDone = false;
+
+			while (!bJobDone && (FPlatformTime::Seconds() - PollStart) < PollTimeout)
+			{
+				FPlatformProcess::Sleep(1.0f);
+
+				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> PollReq = FHttpModule::Get().CreateRequest();
+				PollReq->SetURL(HistoryURL);
+				PollReq->SetVerb(TEXT("GET"));
+				PollReq->SetTimeout(15.0f);
+
+				bool bPollCompleted = false;
+				FString PollBody;
+
+				PollReq->OnProcessRequestComplete().BindLambda(
+					[&bPollCompleted, &PollBody](FHttpRequestPtr Req, FHttpResponsePtr Resp, bool bConnected)
+					{
+						bPollCompleted = true;
+						if (bConnected && Resp.IsValid() && Resp->GetResponseCode() == 200)
+						{
+							PollBody = Resp->GetContentAsString();
+						}
+					});
+
+				PollReq->ProcessRequest();
+				double ReqStart = FPlatformTime::Seconds();
+				while (!bPollCompleted && (FPlatformTime::Seconds() - ReqStart) < 15.0)
+				{
+					FPlatformProcess::Sleep(0.05f);
+					FHttpModule::Get().GetHttpManager().Tick(0.05f);
+				}
+
+				if (PollBody.IsEmpty()) continue;
+
+				// Parse history response: { "<prompt_id>": { "outputs": { "<node_id>": { "images": [...] } } } }
+				TSharedPtr<FJsonObject> HistoryJson;
+				TSharedRef<TJsonReader<>> HistReader = TJsonReaderFactory<>::Create(PollBody);
+				if (!FJsonSerializer::Deserialize(HistReader, HistoryJson) || !HistoryJson.IsValid())
+					continue;
+
+				const TSharedPtr<FJsonObject>* PromptEntry;
+				if (!HistoryJson->TryGetObjectField(PromptId, PromptEntry) || !PromptEntry)
+					continue; // Not yet in history — still running
+
+				// Check for outputs
+				const TSharedPtr<FJsonObject>* OutputsObj;
+				if (!(*PromptEntry)->TryGetObjectField(TEXT("outputs"), OutputsObj) || !OutputsObj)
+					continue;
+
+				// Look for SaveImage node output (node "4")
+				const TSharedPtr<FJsonObject>* SaveNodeOutput;
+				if ((*OutputsObj)->TryGetObjectField(TEXT("4"), SaveNodeOutput) && SaveNodeOutput)
+				{
+					const TArray<TSharedPtr<FJsonValue>>* ImagesArr;
+					if ((*SaveNodeOutput)->TryGetArrayField(TEXT("images"), ImagesArr) && ImagesArr && ImagesArr->Num() > 0)
+					{
+						TSharedPtr<FJsonObject> FirstImage = (*ImagesArr)[0]->AsObject();
+						if (FirstImage.IsValid())
+						{
+							OutputFilename = FirstImage->GetStringField(TEXT("filename"));
+							OutputSubfolder = FirstImage->GetStringField(TEXT("subfolder"));
+							bJobDone = true;
+						}
+					}
+				}
+			}
+
+			if (!bJobDone)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Timeout waiting for upscale of '%s' (prompt_id=%s)"),
+					*TexName, *PromptId);
+				continue;
+			}
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Upscale complete for '%s' -> %s"),
+			*TexName, *OutputFilename);
+
+		// 5. Download the upscaled image from ComfyUI /view endpoint
+		FString ViewURL = FString::Printf(TEXT("%s/view?filename=%s&subfolder=%s&type=output"),
+			*BaseURL, *OutputFilename, *OutputSubfolder);
+
+		TArray<uint8> UpscaledImageData;
+		{
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> DLReq = FHttpModule::Get().CreateRequest();
+			DLReq->SetURL(ViewURL);
+			DLReq->SetVerb(TEXT("GET"));
+			DLReq->SetTimeout(120.0f);
+
+			bool bDLCompleted = false;
+			bool bDLSuccess = false;
+
+			DLReq->OnProcessRequestComplete().BindLambda(
+				[&bDLCompleted, &bDLSuccess, &UpscaledImageData](FHttpRequestPtr Req, FHttpResponsePtr Resp, bool bConnected)
+				{
+					bDLCompleted = true;
+					if (bConnected && Resp.IsValid() && Resp->GetResponseCode() == 200)
+					{
+						UpscaledImageData = Resp->GetContent();
+						bDLSuccess = true;
+					}
+					else if (Resp.IsValid())
+					{
+						UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Download failed HTTP %d"),
+							Resp->GetResponseCode());
+					}
+				});
+
+			DLReq->ProcessRequest();
+			double DLStart = FPlatformTime::Seconds();
+			while (!bDLCompleted && (FPlatformTime::Seconds() - DLStart) < 120.0)
+			{
+				FPlatformProcess::Sleep(0.05f);
+				FHttpModule::Get().GetHttpManager().Tick(0.05f);
+			}
+
+			if (!bDLSuccess || UpscaledImageData.Num() == 0)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Failed to download upscaled image for '%s'"),
+					*TexName);
+				continue;
+			}
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Downloaded upscaled '%s' (%d bytes)"),
+			*TexName, UpscaledImageData.Num());
+
+		// 6. Replace the texture in the GLB document
+		// ComfyUI SaveImage always outputs PNG
+		if (ViewGenGLB::ReplaceTexture(GLBDoc, TexIdx, UpscaledImageData, TEXT("image/png")))
+		{
+			++SuccessCount;
+			UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Replaced texture '%s' in GLB document"), *TexName);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: Failed to replace texture '%s' in GLB document"), *TexName);
+		}
+	}
+
+	if (SuccessCount == 0)
+	{
+		UpdateStatusText(TEXT("Texture Upscale: No textures were successfully upscaled"));
+		UE_LOG(LogTemp, Warning, TEXT("ViewGen TextureUpscale: No textures upscaled successfully"));
+		return;
+	}
+
+	// 7. Save the modified GLB
+	FString OutputDir = FPaths::GetPath(GLBPath);
+	FString BaseName = FPaths::GetBaseFilename(GLBPath);
+	FString OutputPath = OutputDir / (BaseName + OutputSuffix + TEXT(".glb"));
+
+	UpdateStatusText(FString::Printf(TEXT("Texture Upscale: Saving upscaled GLB (%d/%d textures)..."),
+		SuccessCount, TotalTextures));
+
+	if (ViewGenGLB::SaveGLB(GLBDoc, OutputPath))
+	{
+		UE_LOG(LogTemp, Log, TEXT("ViewGen TextureUpscale: Saved upscaled GLB to %s (%d/%d textures upscaled)"),
+			*OutputPath, SuccessCount, TotalTextures);
+		UpdateStatusText(FString::Printf(TEXT("Texture Upscale: Complete! %d/%d textures upscaled → %s"),
+			SuccessCount, TotalTextures, *FPaths::GetCleanFilename(OutputPath)));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("ViewGen TextureUpscale: Failed to save GLB to %s"), *OutputPath);
+		UpdateStatusText(TEXT("Texture Upscale: Failed to save output GLB file"));
+	}
+}
+
+// ============================================================================
+// GLB Extract + Repack — composable texture processing via graph
+// ============================================================================
+
+bool SViewGenPanel::ResolveGLBExtractNodes(TSharedPtr<FJsonObject> Workflow)
+{
+	if (!GraphEditor.IsValid() || !HttpClient.IsValid() || !Workflow.IsValid())
+		return false;
+
+	bool bFoundExtract = false;
+
+	for (const FGraphNode& Node : GraphEditor->GetNodes())
+	{
+		if (Node.ClassType != UEGLBExtractClassType) continue;
+
+		FString GLBPath;
+		const FString* PathVal = Node.WidgetValues.Find(TEXT("glb_path"));
+		if (PathVal && !PathVal->IsEmpty()) GLBPath = *PathVal;
+
+		if (GLBPath.IsEmpty())
+		{
+			UpdateStatusText(TEXT("GLB Extract: No GLB file path specified"));
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBExtract: Node '%s' has empty glb_path"), *Node.Id);
+			return false;
+		}
+		if (!FPaths::FileExists(GLBPath))
+		{
+			UpdateStatusText(FString::Printf(TEXT("GLB Extract: File not found: %s"), *FPaths::GetCleanFilename(GLBPath)));
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBExtract: File not found: %s"), *GLBPath);
+			return false;
+		}
+
+		// Load the GLB
+		UpdateStatusText(TEXT("GLB Extract: Loading GLB file..."));
+		UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract: Loading GLB from %s"), *GLBPath);
+
+		ViewGenGLB::FGLBDocument GLBDoc;
+		if (!ViewGenGLB::LoadGLB(GLBPath, GLBDoc))
+		{
+			UpdateStatusText(TEXT("GLB Extract: Failed to load GLB file"));
+			UE_LOG(LogTemp, Error, TEXT("ViewGen GLBExtract: LoadGLB failed for %s"), *GLBPath);
+			return false;
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract: Loaded %d textures from GLB"), GLBDoc.Textures.Num());
+
+		// Map texture names to output pin names
+		// ViewGenGLB DeriveTextureName produces: baseColor_N, metallicRoughness_N, normal_N, emissive_N, occlusion_N
+		// Our pins are: DIFFUSE, ORM (channel-packed: Occlusion/Roughness/Metallic), NORMAL
+		// Note: metallicRoughness is channel-packed (G=roughness, B=metallic) — upscaling may introduce artifacts
+		auto MapTextureToPinName = [](const FString& TexName) -> FString
+		{
+			FString Lower = TexName.ToLower();
+			if (Lower.Contains(TEXT("normal")))
+				return TEXT("NORMAL");
+			if (Lower.Contains(TEXT("color")) || Lower.Contains(TEXT("diffuse")) || Lower.Contains(TEXT("albedo")))
+				return TEXT("DIFFUSE");
+			if (Lower.Contains(TEXT("metallic")) || Lower.Contains(TEXT("roughness")) || Lower.Contains(TEXT("orm")) || Lower.Contains(TEXT("occlusion")))
+				return TEXT("ORM");
+			return FString();
+		};
+
+		// Upload each texture and resolve the marker in the workflow
+		for (int32 TexIdx = 0; TexIdx < GLBDoc.Textures.Num(); ++TexIdx)
+		{
+			const ViewGenGLB::FTextureImage& TexImage = GLBDoc.Textures[TexIdx];
+			FString PinName = MapTextureToPinName(TexImage.Name);
+			if (PinName.IsEmpty())
+			{
+				UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract: Skipping unmapped texture '%s'"), *TexImage.Name);
+				continue;
+			}
+
+			FString MarkerKey = UEGLBTextureMarkerPrefix + Node.Id + TEXT("_") + PinName;
+
+			// Upload the raw texture bytes
+			FString UploadFilename = FString::Printf(TEXT("viewgen_glb_%s_%s.%s"),
+				*Node.Id, *PinName,
+				TexImage.MimeType.Contains(TEXT("png")) ? TEXT("png") : TEXT("jpg"));
+			FString ServerFilename;
+
+			UpdateStatusText(FString::Printf(TEXT("GLB Extract: Uploading %s texture..."), *PinName));
+
+			if (!HttpClient->UploadRawFile(TexImage.ImageData, UploadFilename, TexImage.MimeType, ServerFilename))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBExtract: Failed to upload texture '%s' (%s)"), *TexImage.Name, *PinName);
+				continue;
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract: Uploaded '%s' as '%s' (pin: %s)"),
+				*TexImage.Name, *ServerFilename, *PinName);
+
+			// Resolve the marker in the workflow — find all LoadImage nodes with this marker
+			for (const auto& WFPair : Workflow->Values)
+			{
+				TSharedPtr<FJsonObject> WFNode = WFPair.Value->AsObject();
+				if (!WFNode.IsValid()) continue;
+
+				FString ClassType;
+				if (!WFNode->TryGetStringField(TEXT("class_type"), ClassType)) continue;
+				if (ClassType != TEXT("LoadImage")) continue;
+
+				const TSharedPtr<FJsonObject>* InputsPtr;
+				if (!WFNode->TryGetObjectField(TEXT("inputs"), InputsPtr) || !InputsPtr) continue;
+
+				FString ImageVal;
+				if ((*InputsPtr)->TryGetStringField(TEXT("image"), ImageVal) && ImageVal == MarkerKey)
+				{
+					(*InputsPtr)->SetStringField(TEXT("image"), ServerFilename);
+					UE_LOG(LogTemp, Log, TEXT("ViewGen GLBExtract: Resolved marker '%s' -> '%s'"), *MarkerKey, *ServerFilename);
+				}
+			}
+		}
+
+		// Cache the GLB document for the Repack node to use after generation
+		LoadedGLBDocuments.Add(Node.Id, MakeShared<ViewGenGLB::FGLBDocument>(MoveTemp(GLBDoc)));
+		bFoundExtract = true;
+	}
+
+	return bFoundExtract;
+}
+
+void SViewGenPanel::ExecuteGLBRepack()
+{
+	if (!GraphEditor.IsValid() || !HttpClient.IsValid()) return;
+
+	const UGenAISettings* Settings = UGenAISettings::Get();
+	FString BaseURL = Settings->APIEndpointURL;
+
+	for (const FGraphNode& Node : GraphEditor->GetNodes())
+	{
+		if (Node.ClassType != UEGLBRepackClassType) continue;
+
+		// Find the connected GLB Extract node via the MESH pin
+		FString ExtractNodeId;
+		for (const FGraphConnection& Conn : GraphEditor->GetConnections())
+		{
+			if (Conn.TargetNodeId == Node.Id && Conn.TargetInputName == TEXT("MESH"))
+			{
+				ExtractNodeId = Conn.SourceNodeId;
+				break;
+			}
+		}
+
+		if (ExtractNodeId.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: No MESH input connected — cannot determine source GLB"));
+			UpdateStatusText(TEXT("GLB Repack: Connect MESH input to a GLB Extract node"));
+			continue;
+		}
+
+		// Get the cached GLB document
+		TSharedPtr<ViewGenGLB::FGLBDocument>* GLBDocPtr = LoadedGLBDocuments.Find(ExtractNodeId);
+		if (!GLBDocPtr || !GLBDocPtr->IsValid() || !(*GLBDocPtr)->bValid)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: No cached GLB document for extract node '%s'"), *ExtractNodeId);
+			UpdateStatusText(TEXT("GLB Repack: Source GLB not loaded — re-run generation"));
+			continue;
+		}
+		ViewGenGLB::FGLBDocument* GLBDoc = GLBDocPtr->Get();
+
+		// Get the source GLB path for output naming
+		FString GLBPath;
+		const FGraphNode* ExtractNode = GraphEditor->FindNodeById(ExtractNodeId);
+		if (ExtractNode)
+		{
+			const FString* PathVal = ExtractNode->WidgetValues.Find(TEXT("glb_path"));
+			if (PathVal) GLBPath = *PathVal;
+		}
+
+		FString OutputSuffix = TEXT("_upscaled");
+		const FString* SuffixVal = Node.WidgetValues.Find(TEXT("output_suffix"));
+		if (SuffixVal && !SuffixVal->IsEmpty()) OutputSuffix = *SuffixVal;
+
+		// Map pin names back to texture indices
+		auto MapPinToTextureName = [](const FString& PinName) -> FString
+		{
+			if (PinName == TEXT("DIFFUSE")) return TEXT("color");
+			if (PinName == TEXT("ORM")) return TEXT("metallic");
+			if (PinName == TEXT("NORMAL")) return TEXT("normal");
+			return FString();
+		};
+
+		// Check if all IMAGE pins connect directly back to the Extract node
+		// (i.e., no ComfyUI processing nodes in between — UV repack only mode)
+		bool bDirectConnection = true;
+		int32 DirectImagePinCount = 0;
+		for (const FGraphPin& Pin : Node.InputPins)
+		{
+			if (Pin.Type != TEXT("IMAGE")) continue;
+			bool bConnected = false;
+			for (const FGraphConnection& Conn : GraphEditor->GetConnections())
+			{
+				if (Conn.TargetNodeId == Node.Id && Conn.TargetInputName == Pin.Name)
+				{
+					bConnected = true;
+					if (Conn.SourceNodeId != ExtractNodeId)
+					{
+						bDirectConnection = false;
+					}
+					break;
+				}
+			}
+			if (bConnected) ++DirectImagePinCount;
+		}
+		// If no IMAGE pins are connected at all, it's not a direct connection scenario
+		if (DirectImagePinCount == 0) bDirectConnection = false;
+
+		int32 ReplacedCount = 0;
+
+		if (bDirectConnection)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: All IMAGE pins connect directly to Extract — skipping ComfyUI, UV repack only mode"));
+			// Textures are already in the GLB document — no ComfyUI download needed
+		}
+		else
+		{
+		// Get the prompt_id from HttpClient to query history
+		FString PromptId = HttpClient->GetCurrentPromptId();
+		if (PromptId.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: No prompt_id available — generation may not have completed"));
+			UpdateStatusText(TEXT("GLB Repack: No generation results available"));
+			continue;
+		}
+
+		// Query history for this prompt to find the SaveImage outputs
+		FString HistoryURL = BaseURL / TEXT("history") / PromptId;
+		FString HistoryBody;
+		{
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+			Req->SetURL(HistoryURL);
+			Req->SetVerb(TEXT("GET"));
+			Req->SetTimeout(15.0f);
+
+			bool bDone = false;
+			Req->OnProcessRequestComplete().BindLambda(
+				[&bDone, &HistoryBody](FHttpRequestPtr R, FHttpResponsePtr Resp, bool bOk)
+				{
+					bDone = true;
+					if (bOk && Resp.IsValid() && Resp->GetResponseCode() == 200)
+						HistoryBody = Resp->GetContentAsString();
+				});
+
+			Req->ProcessRequest();
+			double Start = FPlatformTime::Seconds();
+			while (!bDone && (FPlatformTime::Seconds() - Start) < 15.0)
+			{
+				FPlatformProcess::Sleep(0.05f);
+				FHttpModule::Get().GetHttpManager().Tick(0.05f);
+			}
+		}
+
+		if (HistoryBody.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: Failed to fetch history for prompt '%s'"), *PromptId);
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> HistoryJson;
+		TSharedRef<TJsonReader<>> HistReader = TJsonReaderFactory<>::Create(HistoryBody);
+		if (!FJsonSerializer::Deserialize(HistReader, HistoryJson) || !HistoryJson.IsValid())
+			continue;
+
+		const TSharedPtr<FJsonObject>* PromptEntry;
+		if (!HistoryJson->TryGetObjectField(PromptId, PromptEntry) || !PromptEntry)
+			continue;
+
+		const TSharedPtr<FJsonObject>* OutputsObj;
+		if (!(*PromptEntry)->TryGetObjectField(TEXT("outputs"), OutputsObj) || !OutputsObj)
+			continue;
+
+		// Download each SaveImage output and replace the corresponding texture in the GLB
+
+		// Log texture names for debugging
+		for (int32 i = 0; i < GLBDoc->Textures.Num(); ++i)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: Cached GLB texture[%d] name='%s'"), i, *GLBDoc->Textures[i].Name);
+		}
+
+		for (const FGraphPin& Pin : Node.InputPins)
+		{
+			if (Pin.Type != TEXT("IMAGE")) continue;
+			// Check if this pin has a connection
+			bool bHasConnection = false;
+			for (const FGraphConnection& Conn : GraphEditor->GetConnections())
+			{
+				if (Conn.TargetNodeId == Node.Id && Conn.TargetInputName == Pin.Name)
+				{
+					bHasConnection = true;
+					break;
+				}
+			}
+			if (!bHasConnection) continue;
+
+			FString SaveNodeId = Node.Id + TEXT("_save_") + Pin.Name;
+
+			const TSharedPtr<FJsonObject>* SaveOutput;
+			if (!(*OutputsObj)->TryGetObjectField(SaveNodeId, SaveOutput) || !SaveOutput)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: No output found for SaveImage node '%s'"), *SaveNodeId);
+				continue;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* ImagesArr;
+			if (!(*SaveOutput)->TryGetArrayField(TEXT("images"), ImagesArr) || !ImagesArr || ImagesArr->Num() == 0)
+				continue;
+
+			TSharedPtr<FJsonObject> ImageInfo = (*ImagesArr)[0]->AsObject();
+			if (!ImageInfo.IsValid()) continue;
+
+			FString Filename = ImageInfo->GetStringField(TEXT("filename"));
+			FString Subfolder = ImageInfo->GetStringField(TEXT("subfolder"));
+
+			// Download the upscaled image
+			FString ViewURL = FString::Printf(TEXT("%s/view?filename=%s&subfolder=%s&type=output"),
+				*BaseURL, *Filename, *Subfolder);
+
+			UpdateStatusText(FString::Printf(TEXT("GLB Repack: Downloading %s..."), *Pin.Name));
+
+			TArray<uint8> DownloadedData;
+			{
+				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> DLReq = FHttpModule::Get().CreateRequest();
+				DLReq->SetURL(ViewURL);
+				DLReq->SetVerb(TEXT("GET"));
+				DLReq->SetTimeout(120.0f);
+
+				bool bDLDone = false;
+				bool bDLOk = false;
+				DLReq->OnProcessRequestComplete().BindLambda(
+					[&bDLDone, &bDLOk, &DownloadedData](FHttpRequestPtr R, FHttpResponsePtr Resp, bool bOk)
+					{
+						bDLDone = true;
+						if (bOk && Resp.IsValid() && Resp->GetResponseCode() == 200)
+						{
+							DownloadedData = Resp->GetContent();
+							bDLOk = true;
+						}
+					});
+
+				DLReq->ProcessRequest();
+				double DLStart = FPlatformTime::Seconds();
+				while (!bDLDone && (FPlatformTime::Seconds() - DLStart) < 120.0)
+				{
+					FPlatformProcess::Sleep(0.05f);
+					FHttpModule::Get().GetHttpManager().Tick(0.05f);
+				}
+
+				if (!bDLOk || DownloadedData.Num() == 0)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: Failed to download '%s' for pin %s"), *Filename, *Pin.Name);
+					continue;
+				}
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: Downloaded %s (%d bytes) for pin %s"),
+				*Filename, DownloadedData.Num(), *Pin.Name);
+
+			// Find the matching texture index in the GLB
+			FString TargetTexName = MapPinToTextureName(Pin.Name);
+			int32 TexIdx = INDEX_NONE;
+			for (int32 i = 0; i < GLBDoc->Textures.Num(); ++i)
+			{
+				FString Lower = GLBDoc->Textures[i].Name.ToLower();
+				if (Lower.Contains(TargetTexName))
+				{
+					TexIdx = i;
+					break;
+				}
+			}
+
+			// Fallback: use the same mapping logic as ResolveGLBExtractNodes
+			if (TexIdx == INDEX_NONE)
+			{
+				for (int32 i = 0; i < GLBDoc->Textures.Num(); ++i)
+				{
+					FString Lower = GLBDoc->Textures[i].Name.ToLower();
+					if (Pin.Name == TEXT("DIFFUSE") && (Lower.Contains(TEXT("color")) || Lower.Contains(TEXT("diffuse")) || Lower.Contains(TEXT("albedo"))))
+					{ TexIdx = i; break; }
+					if (Pin.Name == TEXT("ORM") && (Lower.Contains(TEXT("metallic")) || Lower.Contains(TEXT("roughness")) || Lower.Contains(TEXT("orm")) || Lower.Contains(TEXT("occlusion"))))
+					{ TexIdx = i; break; }
+					if (Pin.Name == TEXT("NORMAL") && Lower.Contains(TEXT("normal")))
+					{ TexIdx = i; break; }
+				}
+			}
+
+			if (TexIdx == INDEX_NONE)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: No matching texture for pin '%s' (looking for '%s')"),
+					*Pin.Name, *TargetTexName);
+				continue;
+			}
+
+			// Replace the texture
+			if (ViewGenGLB::ReplaceTexture(*GLBDoc, TexIdx, DownloadedData, TEXT("image/png")))
+			{
+				++ReplacedCount;
+				UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: Replaced texture '%s' (index %d) with upscaled data"),
+					*GLBDoc->Textures[TexIdx].Name, TexIdx);
+			}
+		}
+
+		if (ReplacedCount == 0)
+		{
+			UpdateStatusText(TEXT("GLB Repack: No textures were replaced"));
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: No textures replaced for node '%s'"), *Node.Id);
+			continue;
+		}
+		} // end else (!bDirectConnection)
+
+		// Optional: UV repack via xatlas
+		const FString* RepackVal = Node.WidgetValues.Find(TEXT("repack_uvs"));
+		bool bRepackUVs = RepackVal && (*RepackVal == TEXT("true") || *RepackVal == TEXT("True"));
+		if (bRepackUVs)
+		{
+			// Parse upres_scale dropdown (1x, 2x, 4x)
+			int32 UpresScale = 1;
+			const FString* UpresVal = Node.WidgetValues.Find(TEXT("upres_scale"));
+			if (UpresVal)
+			{
+				if (*UpresVal == TEXT("2x")) UpresScale = 2;
+				else if (*UpresVal == TEXT("4x")) UpresScale = 4;
+			}
+
+			UpdateStatusText(FString::Printf(TEXT("GLB Repack: Running xatlas UV repack (%dx upres)..."), UpresScale));
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: Running xatlas UV repack (atlas=2048, padding=8, upres=%dx)"), UpresScale);
+
+			ViewGenUVRepack::FRepackOptions UVOptions;
+			UVOptions.AtlasResolution = 2048;
+			UVOptions.ChartPadding = 8;
+			UVOptions.DilationPixels = 16;
+			UVOptions.bBilinearSample = true;
+			UVOptions.UpresScale = UpresScale;
+
+			if (ViewGenUVRepack::RepackUVs(*GLBDoc, UVOptions))
+			{
+				UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: UV repack completed successfully (%dx%d)"),
+					2048 * UpresScale, 2048 * UpresScale);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen GLBRepack: UV repack failed — saving with original UVs"));
+				UpdateStatusText(TEXT("GLB Repack: UV repack failed, using original UVs"));
+			}
+		}
+
+		// Save the repacked GLB
+		FString OutputDir = FPaths::GetPath(GLBPath);
+		FString BaseName = FPaths::GetBaseFilename(GLBPath);
+		FString OutputPath = OutputDir / (BaseName + OutputSuffix + TEXT(".glb"));
+
+		UpdateStatusText(bDirectConnection
+			? TEXT("GLB Repack: Saving UV-repacked GLB...")
+			: FString::Printf(TEXT("GLB Repack: Saving %d repacked textures..."), ReplacedCount));
+
+		if (ViewGenGLB::SaveGLB(*GLBDoc, OutputPath))
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen GLBRepack: Saved repacked GLB to %s (%d textures replaced, uvRepack=%s)"),
+				*OutputPath, ReplacedCount, bRepackUVs ? TEXT("true") : TEXT("false"));
+			UpdateStatusText(bDirectConnection
+				? FString::Printf(TEXT("GLB Repack: UV Repack complete → %s"), *FPaths::GetCleanFilename(OutputPath))
+				: FString::Printf(TEXT("GLB Repack: Complete! %d textures → %s"), ReplacedCount, *FPaths::GetCleanFilename(OutputPath)));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("ViewGen GLBRepack: Failed to save GLB to %s"), *OutputPath);
+			UpdateStatusText(TEXT("GLB Repack: Failed to save output GLB"));
+		}
+	}
+
+	// Clear cached documents
+	LoadedGLBDocuments.Empty();
 }
 
 void SViewGenPanel::Apply3DAssetExportSettings(UStaticMesh* Mesh, const FString& CollisionMode, bool bEnableNanite)

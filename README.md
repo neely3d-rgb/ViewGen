@@ -11,6 +11,8 @@ An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer a
 - **ComfyUI Integration** — Visual node-graph workflow editor that maps directly to ComfyUI API workflows. Ships with 30+ ready-to-use workflow templates. Auto-detects Flux models and switches to the correct split-loader path.
 - **Gemini & Kling Support** — Direct integration with Google Gemini and Kling AI image generation, with mode-specific settings for model selection, aspect ratio, and image fidelity.
 - **Meshy 3D Generation** — Text-to-3D and image-to-3D model generation via the Meshy API, with in-editor preview.
+- **GLB Extract + Repack Pipeline** — Load AI-generated GLB models, extract textures for upscaling through ComfyUI workflows, and repack into a new GLB with replaced textures. Supports DIFFUSE, ORM (channel-packed Occlusion/Roughness/Metallic), and NORMAL map pins.
+- **UV Repack (xatlas)** — Optional xatlas-powered UV atlas repacking for AI-generated 3D models. Generates clean UV layouts, bakes textures from old UVs to new UVs via software rasterization with edge-padding dilation to prevent seam artifacts. Includes a progress dialog with per-step feedback.
 - **Segmentation Capture** — Object and material segmentation masks for targeted inpainting and compositing.
 - **LoRA Support** — Select and apply LoRA models from your ComfyUI installation with adjustable strength.
 - **Hi-Res Fix** — Optional upscaling pass for higher-resolution output.
@@ -43,6 +45,12 @@ ViewGen uses a tabbed interface with the viewport capture and results panel at t
    └── Plugins/
        └── ViewGen/
            ├── Source/
+           │   └── ViewGen/
+           │       ├── Private/
+           │       ├── Public/
+           │       └── ThirdParty/
+           │           ├── tinygltf/    (GLB/glTF parsing — MIT)
+           │           └── xatlas/      (UV atlas generation — MIT)
            ├── Workflows/
            ├── ViewGen.uplugin
            └── ...
@@ -69,6 +77,15 @@ ViewGen is part of the **StoryTools** suite. These companion plugins are optiona
 
 - **SceneBreak** — AI-powered scene breakdown and asset discovery from reference images.
 - **Gaussian Splat Generator** — Generate and import Gaussian splat point clouds from images.
+
+## Third-Party Libraries
+
+ViewGen includes the following MIT-licensed libraries, bundled in `Source/ViewGen/ThirdParty/`:
+
+- **tinygltf** — Header-only glTF 2.0 / GLB loader/writer by Syoyo Fujita. Used for parsing and reconstructing GLB binary files in the Extract/Repack pipeline.
+- **xatlas** — UV atlas generation library by Jonathan Young. Used for UV unwrapping and chart packing in the UV Repack feature.
+
+Both libraries are compiled as part of the ViewGen module (no separate build step required). See their respective `LICENSE` files in the ThirdParty directories.
 
 ## Contributing
 

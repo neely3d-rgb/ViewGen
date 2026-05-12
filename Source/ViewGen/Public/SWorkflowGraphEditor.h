@@ -78,6 +78,9 @@ static const FString UEPromptAdherenceClassType = TEXT("__UE_PromptAdherence__")
 static const FString UEImageUpresClassType = TEXT("__UE_ImageUpres__");
 static const FString UESequenceClassType = TEXT("__UE_Sequence__");
 static const FString UEVideoToImageClassType = TEXT("__UE_VideoToImage__");
+static const FString UETextureUpscaleClassType = TEXT("__UE_TextureUpscale__"); // Legacy — kept for compat
+static const FString UEGLBExtractClassType = TEXT("__UE_GLBExtract__");
+static const FString UEGLBRepackClassType = TEXT("__UE_GLBRepack__");
 
 /** Marker filenames emitted by ExportWorkflowJSON for UE source nodes.
  *  The caller is responsible for replacing these with real uploaded filenames. */
@@ -86,6 +89,8 @@ static const FString UEDepthMapMarker = TEXT("__UE_DEPTH_IMAGE__");
 static const FString UESegmentationMarker = TEXT("__UE_SEGMENTATION_IMAGE__");
 /** Per-node marker prefix for UE Video to Image nodes. Full marker: prefix + nodeId */
 static const FString UEVideoFrameMarkerPrefix = TEXT("__UE_VIDEO_FRAME__");
+/** Per-node marker prefix for GLB Extract texture outputs. Full marker: prefix + nodeId + "_" + pinName */
+static const FString UEGLBTextureMarkerPrefix = TEXT("__UE_GLB_TEX__");
 
 /** A visual comment group box that wraps nodes */
 struct FGraphGroup
@@ -157,11 +162,20 @@ struct FGraphNode
 	 *  on a stale packed index). Always kept in sync with ThumbnailBrush. */
 	UTexture2D* ThumbnailTexture = nullptr;
 
+	/** User-adjustable display height for the thumbnail preview (details panel).
+	 *  Defaults to 200. Width is derived from aspect ratio. */
+	float ThumbnailDisplayHeight = 200.0f;
+
 	/** 3D mesh preview renderer for Save3DModel and similar nodes */
 	TSharedPtr<FMeshPreviewRenderer> MeshPreview;
 
 	/** Local disk path of the last browsed file (for video nodes — enables "Play" button) */
 	FString LocalFilePath;
+
+	/** GLB texture info strings for display in the details panel.
+	 *  Populated by ProbeGLBTextures when a GLB file is selected on an Extract node.
+	 *  Each entry is a formatted string like "DIFFUSE: 4096x4096 (2.1 MB)" */
+	TArray<FString> GLBTextureInfoStrings;
 
 	/** Whether this node is currently executing in ComfyUI */
 	bool bIsExecuting = false;
@@ -200,7 +214,10 @@ struct FGraphNode
 			|| ClassType == UEPromptAdherenceClassType
 			|| ClassType == UEImageUpresClassType
 			|| ClassType == UESequenceClassType
-			|| ClassType == UEVideoToImageClassType;
+			|| ClassType == UEVideoToImageClassType
+			|| ClassType == UETextureUpscaleClassType
+			|| ClassType == UEGLBExtractClassType
+			|| ClassType == UEGLBRepackClassType;
 	}
 };
 

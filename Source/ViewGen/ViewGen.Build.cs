@@ -18,6 +18,10 @@ public class ViewGen : ModuleRules
 			"Source", "MovieRenderPipelineEditor", "Public");
 		PrivateIncludePaths.Add(MovieRenderEditorPublic);
 
+		// ThirdParty includes
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "ThirdParty", "tinygltf"));
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "ThirdParty", "xatlas"));
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",

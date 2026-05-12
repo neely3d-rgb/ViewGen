@@ -183,7 +183,7 @@
 <div class="cover-banner">
   <h1>ViewGen</h1>
   <div class="subtitle">AI Viewport Generator for Unreal Engine</div>
-  <div class="version">Plugin Documentation v2.1.0</div>
+  <div class="version">Plugin Documentation v2.2.0</div>
 </div>
 
 <p class="cover-desc">
@@ -193,7 +193,7 @@
 
 <div class="cover-meta">
   <b>Author:</b> C. Michael Neely<br>
-  <b>Version:</b> 2.1.0 (Beta)<br>
+  <b>Version:</b> 2.2.0 (Beta)<br>
   <b>Engine:</b> Unreal Engine 5.7<br>
   <b>Platforms:</b> Windows, Linux, macOS<br>
   <b>&copy; 2026 Creative Story Lab Inc</b>
@@ -244,6 +244,7 @@
   <li><b>Node Graph Editor</b> &mdash; Interactive drag-and-drop graph editor supporting all ComfyUI node types plus custom UE source nodes.</li>
   <li><b>Video Generation</b> &mdash; Image-to-video via Kling Video, Wan I2V, and Google Veo3.</li>
   <li><b>3D Model Pipeline</b> &mdash; Convert generated images to 3D meshes via Meshy, import as UE assets with collision and Nanite support.</li>
+  <li><b>GLB Texture Pipeline</b> &mdash; Extract, process, and repack textures on GLB models with optional xatlas UV repack and bilinear upres (2x/4x).</li>
   <li><b>LoRA Support</b> &mdash; Add, remove, and weight-adjust LoRA models for fine-tuned generation styles.</li>
   <li><b>Result Gallery</b> &mdash; Browse, select, and navigate generation history with thumbnail previews.</li>
   <li><b>Workflow Save/Load</b> &mdash; Save and load graph editor workflows as JSON files, including ComfyUI template import.</li>
@@ -554,6 +555,11 @@
     <tr><td>UE Save 3D Model</td><td>&mdash;</td><td>Downloads a 3D model (GLB/OBJ/FBX) from ComfyUI mesh nodes and imports into UE.</td></tr>
     <tr><td>UE 3D Loader</td><td>&mdash;</td><td>Browses for a local 3D model file and imports it into the Content Browser.</td></tr>
     <tr><td>UE 3D Asset Export</td><td>&mdash;</td><td>Downloads generated 3D models and imports as .uasset with collision, Nanite, and placement options.</td></tr>
+    <tr><td>UE Image Upres</td><td>IMAGE</td><td>Upscales an image using configurable interpolation and converts between 8-bit and 16-bit colour depth.</td></tr>
+    <tr><td>UE Video to Image</td><td>IMAGE</td><td>Extracts a single frame from a video file via FFmpeg and outputs it as an IMAGE for downstream nodes.</td></tr>
+    <tr><td>UE Sequence</td><td>&mdash;</td><td>Executes downstream nodes in stages: all nodes connected to Then 0 complete before Then 1 starts.</td></tr>
+    <tr><td>UE GLB Extract</td><td>MESH, DIFFUSE, ORM, NORMAL</td><td>Loads a GLB 3D model and outputs its geometry plus PBR texture maps as separate IMAGE pins. Browsing a GLB file displays a thumbnail preview and texture metadata (dimensions, size) in the details panel.</td></tr>
+    <tr><td>UE GLB Repack</td><td>&mdash;</td><td>Takes a MESH reference and processed texture maps (DIFFUSE, ORM, NORMAL) as inputs, optionally performs UV repack via xatlas with bilinear upres (1x/2x/4x), and saves a new GLB file.</td></tr>
   </tbody>
 </table>
 
@@ -640,12 +646,11 @@
 <h2 class="section-title" id="s11">11. 3D Model Pipeline</h2>
 
 <p>
-  ViewGen includes a complete pipeline from 2D generation to 3D asset import. The typical workflow is:
-  generate an image, send it to Meshy for Image-to-3D conversion, then import the resulting mesh
-  into UE as a static mesh asset.
+  ViewGen includes a complete pipeline from 2D generation to 3D asset import, as well as a GLB texture
+  pipeline for extracting, processing, and repacking textures on existing 3D models.
 </p>
 
-<h3>Pipeline Steps</h3>
+<h3>Image-to-3D Pipeline</h3>
 <ul class="features">
   <li><b>1. Generate</b> an image using any generation mode.</li>
   <li><b>2. Convert to 3D</b> via Meshy API (automatic task creation, polling, and download).</li>
@@ -655,6 +660,33 @@
   The graph editor provides dedicated UE source nodes for each stage: UE Image Bridge for disk handoffs,
   UE Save 3D Model for downloading generated meshes, UE 3D Asset Export for Content Browser import,
   and UE Meshy Import for direct Meshy-to-level placement.
+</p>
+
+<h3>GLB Texture Pipeline</h3>
+<p>
+  The GLB Extract and GLB Repack node pair enables a texture processing pipeline for existing 3D models.
+  This is particularly useful for upscaling or AI-enhancing the textures on a GLB model without
+  modifying the geometry.
+</p>
+<ul class="features">
+  <li><b>1. Extract</b> &mdash; The UE GLB Extract node loads a GLB file and splits it into separate outputs: MESH (geometry reference), DIFFUSE, ORM (occlusion/roughness/metallic), and NORMAL texture maps. Browsing a GLB file immediately displays a thumbnail preview of the first texture along with per-texture metadata (name, dimensions, file size) in the node details panel.</li>
+  <li><b>2. Process</b> &mdash; Connect the extracted texture IMAGE outputs to any ComfyUI processing nodes (upscale, denoise, style transfer, etc.) to enhance the textures independently.</li>
+  <li><b>3. Repack</b> &mdash; The UE GLB Repack node takes the processed textures and the MESH reference and rebuilds a new GLB file with the enhanced textures.</li>
+</ul>
+
+<h4>UV Repack (xatlas)</h4>
+<p>
+  The GLB Repack node includes an optional UV repack step powered by xatlas. When enabled, the mesh UVs
+  are unwrapped into a single optimized atlas. The pipeline bakes source textures onto the new UV layout
+  using bilinear sampling, with configurable atlas resolution (always forced to power-of-2 for GPU
+  performance). A dilation pass fills seam edges to prevent visible artifacts.
+</p>
+
+<h4>Upres Scale</h4>
+<p>
+  After UV baking, an optional upres step can bilinearly upscale the baked textures by 2x or 4x. This is
+  a post-bake operation that increases the final texture resolution beyond the atlas bake resolution,
+  configured via the <code>upres_scale</code> dropdown on the Repack node (1x, 2x, or 4x).
 </p>
 
 <!-- ═══════════════ 12. LoRA MANAGEMENT ═══════════════ -->
@@ -763,8 +795,8 @@
 <h3>Module Structure</h3>
 <p>
   ViewGen is a single editor module that loads at PostEngineInit. It registers a nomad tab spawner via
-  FGlobalTabmanager and extends the toolbar/menus with a launch button. The plugin is approximately
-  23,900 lines of C++ across 14 header and 14 implementation files.
+  FGlobalTabmanager and extends the toolbar/menus with a launch button. The plugin includes ThirdParty
+  integrations (xatlas for UV repacking, tinygltf for GLB parsing) alongside its core C++ source files.
 </p>
 
 <h3>Key Classes</h3>
@@ -781,6 +813,8 @@
     <tr><td>UGenAISettings</td><td>GenAISettings.h/.cpp</td><td>UDeveloperSettings: all configurable settings</td></tr>
     <tr><td>FMeshyApiClient</td><td>MeshyApiClient.h/.cpp</td><td>Meshy Image-to-3D API client</td></tr>
     <tr><td>FMeshPreviewRenderer</td><td>MeshPreviewRenderer.h/.cpp</td><td>Offscreen 3D mesh preview rendering</td></tr>
+    <tr><td>ViewGenGLB</td><td>ThirdParty/tinygltf/ViewGenGLB.h/.cpp</td><td>GLB parser: load, extract textures, replace textures, save</td></tr>
+    <tr><td>ViewGenUVRepack</td><td>Private/ViewGenUVRepack.cpp, ThirdParty/xatlas/ViewGenUVRepack.h</td><td>xatlas UV unwrap, texture baking, bilinear upscale</td></tr>
   </tbody>
 </table>
 
@@ -853,7 +887,7 @@
 
 <!-- ═══════════════ FOOTER ═══════════════ -->
 <div class="footer">
-  &copy; 2026 Creative Story Lab Inc &nbsp;|&nbsp; C. Michael Neely &nbsp;|&nbsp; Confidential &nbsp;|&nbsp; ViewGen Plugin v2.1.0 Beta
+  &copy; 2026 Creative Story Lab Inc &nbsp;|&nbsp; C. Michael Neely &nbsp;|&nbsp; Confidential &nbsp;|&nbsp; ViewGen Plugin v2.2.0 Beta
 </div>
 
 </body>

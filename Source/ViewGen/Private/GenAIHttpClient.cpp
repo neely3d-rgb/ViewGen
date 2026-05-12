@@ -2751,6 +2751,7 @@ void FGenAIHttpClient::OnHistoryResponseReceived(FHttpRequestPtr Request, FHttpR
 
 		// Clear prompt ID before fetching to prevent the poll timer from
 		// seeing the same completed result and triggering a duplicate fetch
+		LastCompletedPromptId = CurrentPromptId;
 		CurrentPromptId.Empty();
 
 		FetchResultImage(Chosen.Filename, Chosen.Subfolder, Chosen.FolderType);
@@ -2767,6 +2768,7 @@ void FGenAIHttpClient::OnHistoryResponseReceived(FHttpRequestPtr Request, FHttpR
 			FirstVideo.bIsGif ? TEXT(" (gif)") : TEXT(""), *FirstVideo.Filename);
 
 		bRequestInProgress = false;
+		LastCompletedPromptId = CurrentPromptId;
 		CurrentPromptId.Empty();
 		OnComplete.ExecuteIfBound(true, nullptr);
 		return;
@@ -2778,6 +2780,7 @@ void FGenAIHttpClient::OnHistoryResponseReceived(FHttpRequestPtr Request, FHttpR
 	{
 		UE_LOG(LogTemp, Log, TEXT("ViewGen: 3D model detected as sole workflow output, completing"));
 		bRequestInProgress = false;
+		LastCompletedPromptId = CurrentPromptId;
 		CurrentPromptId.Empty();
 		OnComplete.ExecuteIfBound(true, nullptr);
 		return;

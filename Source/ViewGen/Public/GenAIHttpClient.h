@@ -212,6 +212,10 @@ public:
 	 */
 	void SubmitWorkflowDirect(TSharedPtr<FJsonObject> Workflow);
 
+	/** Get the prompt_id from the most recent submission (for querying /history).
+	 *  Falls back to LastCompletedPromptId if CurrentPromptId was already cleared. */
+	FString GetCurrentPromptId() const { return CurrentPromptId.IsEmpty() ? LastCompletedPromptId : CurrentPromptId; }
+
 	/**
 	 * Upload a base64 PNG to ComfyUI via /upload/image.
 	 * Public so the graph editor can upload viewport/depth images before submitting.
@@ -442,6 +446,7 @@ private:
 
 	// ---- State ----
 	FString CurrentPromptId;
+	FString LastCompletedPromptId;
 	TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> CurrentRequest;
 	TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> ModelFetchRequest;
 	bool bRequestInProgress = false;

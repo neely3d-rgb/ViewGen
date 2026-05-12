@@ -20,6 +20,8 @@
 #include "MeshyApiClient.h"
 
 class SWorkflowGraphEditor;
+// Forward-declare ViewGenGLB types (full include in .cpp)
+namespace ViewGenGLB { struct FGLBDocument; }
 class UStaticMesh;
 
 /**
@@ -313,6 +315,9 @@ private:
 
 	/** Timer handle for polling Quick Render output */
 	FTimerHandle QuickRenderPollTimer;
+
+	/** Browse for a GLB file for texture upscale */
+	void OnBrowseGLBFile(FString NodeId);
 
 	/** Browse for a 3D model file and import it for a UE 3D Loader node */
 	void OnBrowse3DModelFile(FString NodeId);
@@ -639,6 +644,18 @@ private:
 	 *  Fetches the upscaled result image from ComfyUI, converts to 16-bit if requested,
 	 *  and saves to disk as EXR or PNG. Handles the full 8→16 bit pipeline UE-side. */
 	void ExecuteImageUpresExport();
+
+	/** (Legacy) Execute standalone GLB texture upscaling — kept for compat but no longer primary path */
+	void ExecuteTextureUpscale();
+
+	/** Pre-submission: load GLB from Extract nodes, upload textures to ComfyUI, resolve markers */
+	bool ResolveGLBExtractNodes(TSharedPtr<FJsonObject> Workflow);
+
+	/** Post-generation: download upscaled textures from Repack SaveImage nodes, repack GLB */
+	void ExecuteGLBRepack();
+
+	/** Cached GLB document loaded during ResolveGLBExtractNodes, used by ExecuteGLBRepack */
+	TMap<FString, TSharedPtr<ViewGenGLB::FGLBDocument>> LoadedGLBDocuments;
 
 	/** Shared logic for importing and configuring a downloaded 3D model as a .uasset */
 	void Handle3DAssetExport(const FString& DownloadedPath, const FString& AssetPath,
