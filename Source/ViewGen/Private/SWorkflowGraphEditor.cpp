@@ -411,10 +411,42 @@ bool SWorkflowGraphEditor::AreTypesCompatible(const FString& OutputType, const F
 	// Exact match
 	if (OutputType == InputType) return true;
 
-	// Common compatible pairs
-	if (OutputType == TEXT("CONDITIONING") && InputType == TEXT("CONDITIONING")) return true;
+	// ComfyUI supports comma-separated type lists (e.g. "MESH,FILE_3D_GLB,FILE_3D_OBJ").
+	// Split both sides and check if any pair is compatible.
+	auto TypesMatch = [](const FString& A, const FString& B) -> bool
+	{
+		if (A == B || A == TEXT("*") || B == TEXT("*")) return true;
 
-	return false;
+		// 3D file type family: FILE_3D is the parent, FILE_3D_GLB/OBJ/FBX/etc. are subtypes.
+		// MESH is also compatible with any FILE_3D variant.
+		bool bA_Is3D = A.StartsWith(TEXT("FILE_3D")) || A == TEXT("MESH");
+		bool bB_Is3D = B.StartsWith(TEXT("FILE_3D")) || B == TEXT("MESH");
+		if (bA_Is3D && bB_Is3D) return true;
+
+		return false;
+	};
+
+	// Handle comma-separated type lists on either side
+	if (OutputType.Contains(TEXT(",")) || InputType.Contains(TEXT(",")))
+	{
+		TArray<FString> OutTypes, InTypes;
+		OutputType.ParseIntoArray(OutTypes, TEXT(","), true);
+		InputType.ParseIntoArray(InTypes, TEXT(","), true);
+
+		for (const FString& OT : OutTypes)
+		{
+			FString OTrim = OT.TrimStartAndEnd();
+			for (const FString& IT : InTypes)
+			{
+				FString ITrim = IT.TrimStartAndEnd();
+				if (TypesMatch(OTrim, ITrim)) return true;
+			}
+		}
+		return false;
+	}
+
+	// Single types — check family compatibility
+	return TypesMatch(OutputType, InputType);
 }
 
 // ============================================================================
@@ -1449,7 +1481,7 @@ FVector2D SWorkflowGraphEditor::GetPinPosition(const FGraphNode& Node, const FGr
 	}
 	else
 	{
-		// Outputs are drawn below inputs + widgets + thumbnail
+		// Outputs are drawn below inputs + widgets + thumbnail + mesh preview
 		float WidgetOffset = Node.WidgetValues.Num() * GraphConstants::WidgetRowHeight * ZoomLevel;
 		float InputOffset = Node.InputPins.Num() * RowH;
 		float ThumbOffset = 0.0f;
@@ -1462,7 +1494,16 @@ FVector2D SWorkflowGraphEditor::GetPinPosition(const FGraphNode& Node, const FGr
 			float ThumbH = FMath::Min(AvailW / AspectRatio, GraphConstants::ThumbnailHeight);
 			ThumbOffset = (ThumbH + Pad * 2.0f) * ZoomLevel;
 		}
-		float Y = NodePos.Y + HeaderH + PadY + InputOffset + WidgetOffset + ThumbOffset + Pin.PinIndex * RowH + RowH * 0.5f;
+		// 3D mesh preview offset — must match DrawNode's YOffset accumulation
+		float MeshPreviewOffset = 0.0f;
+		if (Node.MeshPreview.IsValid() && Node.MeshPreview->HasPreview())
+		{
+			float Pad = GraphConstants::ThumbnailPadding;
+			float AvailW = Node.Size.X - Pad * 2.0f;
+			float PreviewSz = FMath::Min(AvailW, 160.0f);
+			MeshPreviewOffset = (PreviewSz + Pad * 2.0f) * ZoomLevel;
+		}
+		float Y = NodePos.Y + HeaderH + PadY + InputOffset + WidgetOffset + ThumbOffset + MeshPreviewOffset + Pin.PinIndex * RowH + RowH * 0.5f;
 		return FVector2D(NodePos.X + NodeSize.X, Y);
 	}
 }

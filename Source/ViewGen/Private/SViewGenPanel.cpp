@@ -488,11 +488,13 @@ SViewGenPanel::~SViewGenPanel()
 	SegmentationCapture.Reset();
 
 	// Unroot all history textures so they can be GC'd.
-	// During editor shutdown UObjects may already be destroyed, so check
-	// IsValidLowLevel() before touching the object to avoid index assertions.
+	// During editor shutdown UObjects may already be destroyed and their
+	// internal GUObjectArray indices may be invalid. ::IsValid() touches
+	// the object array and will assert (Index >= 0). Use the fast path
+	// which only checks pointer alignment — safe even for dead objects.
 	for (FHistoryEntry& Entry : ImageHistory)
 	{
-		if (Entry.Texture && ::IsValid(Entry.Texture) && Entry.Texture->IsRooted())
+		if (Entry.Texture && Entry.Texture->IsValidLowLevelFast(false) && Entry.Texture->IsRooted())
 		{
 			Entry.Texture->RemoveFromRoot();
 		}
@@ -501,7 +503,7 @@ SViewGenPanel::~SViewGenPanel()
 	ImageHistory.Empty();
 
 	// Unroot loaded-from-disk source frame texture
-	if (LoadedSourceFrameTexture && ::IsValid(LoadedSourceFrameTexture) && LoadedSourceFrameTexture->IsRooted())
+	if (LoadedSourceFrameTexture && LoadedSourceFrameTexture->IsValidLowLevelFast(false) && LoadedSourceFrameTexture->IsRooted())
 	{
 		LoadedSourceFrameTexture->RemoveFromRoot();
 	}
@@ -11327,7 +11329,7 @@ void SViewGenPanel::ClearSAM3Segments()
 {
 	for (FSAM3Segment& Seg : SAM3Segments)
 	{
-		if (Seg.IsolationTexture && ::IsValid(Seg.IsolationTexture) && Seg.IsolationTexture->IsRooted())
+		if (Seg.IsolationTexture && Seg.IsolationTexture->IsValidLowLevelFast(false) && Seg.IsolationTexture->IsRooted())
 		{
 			Seg.IsolationTexture->RemoveFromRoot();
 		}
@@ -11335,7 +11337,7 @@ void SViewGenPanel::ClearSAM3Segments()
 	}
 	SAM3Segments.Empty();
 
-	if (SAM3VisualizationTexture && ::IsValid(SAM3VisualizationTexture) && SAM3VisualizationTexture->IsRooted())
+	if (SAM3VisualizationTexture && SAM3VisualizationTexture->IsValidLowLevelFast(false) && SAM3VisualizationTexture->IsRooted())
 	{
 		SAM3VisualizationTexture->RemoveFromRoot();
 	}
