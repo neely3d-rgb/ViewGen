@@ -459,6 +459,9 @@ private:
 	FString LastResultSubfolder;
 	FString LastResultFolderType;
 
+	/** Full local path to the last saved result image on disk */
+	FString LastSavedImagePath;
+
 	/** Last 3D model result info (populated when a mesh file is detected in outputs) */
 	FString Last3DModelFilename;
 	FString Last3DModelSubfolder;
@@ -470,6 +473,9 @@ public:
 	const FString& GetLastResultFilename() const { return LastResultFilename; }
 	const FString& GetLastResultSubfolder() const { return LastResultSubfolder; }
 	const FString& GetLastResultFolderType() const { return LastResultFolderType; }
+
+	/** Get the full local path to the last saved result image */
+	const FString& GetLastSavedImagePath() const { return LastSavedImagePath; }
 
 	/** Whether the last completed workflow produced a 3D model file */
 	bool Has3DModelResult() const { return bHas3DModelResult; }

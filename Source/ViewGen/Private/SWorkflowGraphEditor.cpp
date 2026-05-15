@@ -312,39 +312,58 @@ bool SWorkflowGraphEditor::AddConnection(const FString& SourceNodeId, int32 Sour
 {
 	PushUndoSnapshot();
 
-	// Validate nodes exist
-	if (!NodeIndexMap.Contains(SourceNodeId) || !NodeIndexMap.Contains(TargetNodeId))
+	bool bIsGroupTarget = TargetNodeId.Contains(TEXT(".__seqin__"));
+
+	// Validate source node exists
+	if (!NodeIndexMap.Contains(SourceNodeId))
+		return false;
+
+	// Validate target: either a real node or a group pseudo-ID
+	if (!bIsGroupTarget && !NodeIndexMap.Contains(TargetNodeId))
 		return false;
 
 	// Prevent self-connections
 	if (SourceNodeId == TargetNodeId) return false;
 
-	// Remove any existing connection to this input (each input can only have one source)
-	RemoveConnection(TargetNodeId, TargetInputName);
-
-	// Type checking
-	const FGraphNode& SourceNode = Nodes[NodeIndexMap[SourceNodeId]];
-	const FGraphNode& TargetNode = Nodes[NodeIndexMap[TargetNodeId]];
-
-	FString OutputType;
-	if (SourceOutputIndex < SourceNode.OutputPins.Num())
+	if (bIsGroupTarget)
 	{
-		OutputType = SourceNode.OutputPins[SourceOutputIndex].Type;
+		// Enforce single-connection-per-group-input: remove any existing connection targeting this group
+		Connections.RemoveAll([&TargetNodeId](const FGraphConnection& C) {
+			return C.TargetNodeId == TargetNodeId;
+		});
+	}
+	else
+	{
+		// Remove any existing connection to this input (each input can only have one source)
+		RemoveConnection(TargetNodeId, TargetInputName);
 	}
 
-	FString InputType;
-	for (const auto& Pin : TargetNode.InputPins)
+	// Type checking (skip for group targets — wildcard * matches anything)
+	if (!bIsGroupTarget)
 	{
-		if (Pin.Name == TargetInputName)
+		const FGraphNode& SourceNode = Nodes[NodeIndexMap[SourceNodeId]];
+		const FGraphNode& TargetNode = Nodes[NodeIndexMap[TargetNodeId]];
+
+		FString OutputType;
+		if (SourceOutputIndex < SourceNode.OutputPins.Num())
 		{
-			InputType = Pin.Type;
-			break;
+			OutputType = SourceNode.OutputPins[SourceOutputIndex].Type;
 		}
-	}
 
-	if (!OutputType.IsEmpty() && !InputType.IsEmpty() && !AreTypesCompatible(OutputType, InputType))
-	{
-		return false;
+		FString InputType;
+		for (const auto& Pin : TargetNode.InputPins)
+		{
+			if (Pin.Name == TargetInputName)
+			{
+				InputType = Pin.Type;
+				break;
+			}
+		}
+
+		if (!OutputType.IsEmpty() && !InputType.IsEmpty() && !AreTypesCompatible(OutputType, InputType))
+		{
+			return false;
+		}
 	}
 
 	FGraphConnection Conn;
@@ -1204,6 +1223,17 @@ TArray<TSharedPtr<FJsonObject>> SWorkflowGraphEditor::ExportStagedWorkflows(
 		{
 			if (Conn.SourceNodeId == SeqNode->Id && Conn.SourceOutputIndex == StepIdx)
 			{
+				// Check for group-targeted connections
+				if (Conn.TargetNodeId.Contains(TEXT(".__seqin__")))
+				{
+					int32 GIdx = FindGroupBySequenceTargetId(Conn.TargetNodeId);
+					if (GIdx >= 0)
+					{
+						TArray<FString> GroupNodeIds = GetNodeIdsInsideGroup(Groups[GIdx]);
+						Seeds.Append(GroupNodeIds);
+					}
+					continue; // Don't add the pseudo-ID as a seed
+				}
 				Seeds.Add(Conn.TargetNodeId);
 			}
 		}
@@ -1437,6 +1467,56 @@ FVector2D SWorkflowGraphEditor::GetPinPosition(const FGraphNode& Node, const FGr
 	}
 }
 
+FVector2D SWorkflowGraphEditor::GetGroupSequencePinPosition(const FGraphGroup& Group) const
+{
+	FVector2D GPos = GraphToLocal(Group.Position);
+	float HeaderH = 24.0f * ZoomLevel;  // matches GroupHeaderH in OnPaint
+	return FVector2D(GPos.X, GPos.Y + HeaderH * 0.5f);
+}
+
+bool SWorkflowGraphEditor::HitTestGroupSequencePin(FVector2D LocalPos, int32& OutGroupIndex) const
+{
+	float HitRadiusSq = GraphConstants::PinHitRadius * ZoomLevel * GraphConstants::PinHitRadius * ZoomLevel;
+	for (int32 i = 0; i < Groups.Num(); ++i)
+	{
+		FVector2D PinPos = GetGroupSequencePinPosition(Groups[i]);
+		if ((PinPos - LocalPos).SizeSquared() <= HitRadiusSq)
+		{
+			OutGroupIndex = i;
+			return true;
+		}
+	}
+	return false;
+}
+
+int32 SWorkflowGraphEditor::FindGroupBySequenceTargetId(const FString& TargetId) const
+{
+	for (int32 i = 0; i < Groups.Num(); ++i)
+	{
+		if (Groups[i].SequenceTargetId() == TargetId)
+		{
+			return i;
+		}
+	}
+	return -1;
+}
+
+TArray<FString> SWorkflowGraphEditor::GetNodeIdsInsideGroup(const FGraphGroup& Group) const
+{
+	TArray<FString> Result;
+	for (const FGraphNode& Node : Nodes)
+	{
+		if (Node.Position.X >= Group.Position.X &&
+			Node.Position.Y >= Group.Position.Y &&
+			Node.Position.X + Node.Size.X <= Group.Position.X + Group.Size.X &&
+			Node.Position.Y + Node.Size.Y <= Group.Position.Y + Group.Size.Y)
+		{
+			Result.Add(Node.Id);
+		}
+	}
+	return Result;
+}
+
 // ============================================================================
 // OnPaint
 // ============================================================================
@@ -1569,6 +1649,27 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 					WhiteBox, ESlateDrawEffect::None,
 					FLinearColor(BorderColor.R, BorderColor.G, BorderColor.B, 0.5f));
 			}
+
+			// Sequence input pin on left edge of header
+			if (ZoomLevel > 0.2f)
+			{
+				FVector2D SeqPinPos = GetGroupSequencePinPosition(Group);
+				float PinR = GraphConstants::PinRadius * ZoomLevel;
+
+				// Check if this group has a sequence connection
+				bool bSeqConnected = false;
+				for (const FGraphConnection& Conn : Connections)
+				{
+					if (Conn.TargetNodeId == Group.SequenceTargetId())
+					{
+						bSeqConnected = true;
+						break;
+					}
+				}
+
+				// Draw using the wildcard pin color (gray) — same as Sequence node pins
+				DrawPin(SeqPinPos, PinR, bSeqConnected, true, TEXT("*"), AllottedGeometry, OutDrawElements, LayerId + 2);
+			}
 		}
 	}
 	LayerId++;
@@ -1577,12 +1678,20 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 	for (int32 ConnIdx = 0; ConnIdx < Connections.Num(); ++ConnIdx)
 	{
 		const FGraphConnection& Conn = Connections[ConnIdx];
+
+		// Determine if this connection targets a group sequence pin
+		bool bGroupTarget = Conn.TargetNodeId.Contains(TEXT(".__seqin__"));
+
 		const int32* SrcIdx = NodeIndexMap.Find(Conn.SourceNodeId);
-		const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
-		if (!SrcIdx || !DstIdx) continue;
+		if (!SrcIdx) continue;
+
+		if (!bGroupTarget)
+		{
+			const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
+			if (!DstIdx) continue;
+		}
 
 		const FGraphNode& SrcNode = Nodes[*SrcIdx];
-		const FGraphNode& DstNode = Nodes[*DstIdx];
 
 		// Find output pin position
 		FVector2D StartPos = FVector2D::ZeroVector;
@@ -1593,26 +1702,50 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 
 		// Find input pin position
 		FVector2D EndPos = FVector2D::ZeroVector;
-		for (const auto& Pin : DstNode.InputPins)
+		FLinearColor WireColor(0.6f, 0.6f, 0.6f, 0.7f);
+
+		if (bGroupTarget)
 		{
-			if (Pin.Name == Conn.TargetInputName)
+			int32 GIdx = FindGroupBySequenceTargetId(Conn.TargetNodeId);
+			if (GIdx >= 0)
 			{
-				EndPos = GetPinPosition(DstNode, Pin);
-				break;
+				EndPos = GetGroupSequencePinPosition(Groups[GIdx]);
+				// Use a gold/amber color for sequence wires
+				WireColor = FLinearColor(0.8f, 0.6f, 0.15f, 0.8f);
+			}
+			else
+			{
+				continue; // Group was deleted, skip this stale connection
+			}
+		}
+		else
+		{
+			const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
+			if (!DstIdx) continue;
+			const FGraphNode& DstNode = Nodes[*DstIdx];
+			for (const auto& Pin : DstNode.InputPins)
+			{
+				if (Pin.Name == Conn.TargetInputName)
+				{
+					EndPos = GetPinPosition(DstNode, Pin);
+					break;
+				}
 			}
 		}
 
-		// Get colour from output type
-		FLinearColor WireColor(0.6f, 0.6f, 0.6f, 0.7f);
-		if (Conn.SourceOutputIndex < SrcNode.OutputPins.Num())
+		// Get colour from output type (only for non-group targets — group targets already set)
+		if (!bGroupTarget)
 		{
-			const FString& OutType = SrcNode.OutputPins[Conn.SourceOutputIndex].Type;
-			if (OutType == TEXT("MODEL")) WireColor = FLinearColor(0.4f, 0.6f, 0.8f, 0.8f);
-			else if (OutType == TEXT("CLIP")) WireColor = FLinearColor(0.8f, 0.8f, 0.3f, 0.8f);
-			else if (OutType == TEXT("CONDITIONING")) WireColor = FLinearColor(0.8f, 0.5f, 0.2f, 0.8f);
-			else if (OutType == TEXT("LATENT")) WireColor = FLinearColor(0.8f, 0.2f, 0.8f, 0.8f);
-			else if (OutType == TEXT("IMAGE")) WireColor = FLinearColor(0.4f, 0.8f, 0.4f, 0.8f);
-			else if (OutType == TEXT("VAE")) WireColor = FLinearColor(0.8f, 0.3f, 0.3f, 0.8f);
+			if (Conn.SourceOutputIndex < SrcNode.OutputPins.Num())
+			{
+				const FString& OutType = SrcNode.OutputPins[Conn.SourceOutputIndex].Type;
+				if (OutType == TEXT("MODEL")) WireColor = FLinearColor(0.4f, 0.6f, 0.8f, 0.8f);
+				else if (OutType == TEXT("CLIP")) WireColor = FLinearColor(0.8f, 0.8f, 0.3f, 0.8f);
+				else if (OutType == TEXT("CONDITIONING")) WireColor = FLinearColor(0.8f, 0.5f, 0.2f, 0.8f);
+				else if (OutType == TEXT("LATENT")) WireColor = FLinearColor(0.8f, 0.2f, 0.8f, 0.8f);
+				else if (OutType == TEXT("IMAGE")) WireColor = FLinearColor(0.4f, 0.8f, 0.4f, 0.8f);
+				else if (OutType == TEXT("VAE")) WireColor = FLinearColor(0.8f, 0.3f, 0.3f, 0.8f);
+			}
 		}
 
 		// Brighten hovered connection
@@ -1631,33 +1764,48 @@ int32 SWorkflowGraphEditor::OnPaint(const FPaintArgs& Args, const FGeometry& All
 	// Draw in-progress connection drag
 	if (InteractionMode == EInteractionMode::DraggingConnection)
 	{
-		const int32* SrcIdx = NodeIndexMap.Find(DragSourceNodeId);
-		if (SrcIdx)
+		// Check if dragging from a group sequence pin
+		bool bFromGroupPin = DragSourceNodeId.Contains(TEXT(".__seqin__"));
+		if (bFromGroupPin)
 		{
-			const FGraphNode& SrcNode = Nodes[*SrcIdx];
-			FVector2D StartPos = DragConnectionEnd;
-			bool bValidPin = false;
-			if (bDraggingFromOutput && DragSourcePinIndex < SrcNode.OutputPins.Num())
+			int32 GIdx = FindGroupBySequenceTargetId(DragSourceNodeId);
+			if (GIdx >= 0)
 			{
-				StartPos = GetPinPosition(SrcNode, SrcNode.OutputPins[DragSourcePinIndex]);
-				bValidPin = true;
+				FVector2D StartPos = GetGroupSequencePinPosition(Groups[GIdx]);
+				FLinearColor DragColor(0.8f, 0.6f, 0.15f, 0.8f);
+				DrawConnection(DragConnectionEnd, StartPos, DragColor, AllottedGeometry, OutDrawElements, LayerId);
 			}
-			else if (!bDraggingFromOutput && DragSourcePinIndex < SrcNode.InputPins.Num())
+		}
+		else
+		{
+			const int32* SrcIdx = NodeIndexMap.Find(DragSourceNodeId);
+			if (SrcIdx)
 			{
-				StartPos = GetPinPosition(SrcNode, SrcNode.InputPins[DragSourcePinIndex]);
-				bValidPin = true;
-			}
-
-			if (bValidPin)
-			{
-				FLinearColor DragColor(0.8f, 0.8f, 0.2f, 0.8f);
-				if (bDraggingFromOutput)
+				const FGraphNode& SrcNode = Nodes[*SrcIdx];
+				FVector2D StartPos = DragConnectionEnd;
+				bool bValidPin = false;
+				if (bDraggingFromOutput && DragSourcePinIndex < SrcNode.OutputPins.Num())
 				{
-					DrawConnection(StartPos, DragConnectionEnd, DragColor, AllottedGeometry, OutDrawElements, LayerId);
+					StartPos = GetPinPosition(SrcNode, SrcNode.OutputPins[DragSourcePinIndex]);
+					bValidPin = true;
 				}
-				else
+				else if (!bDraggingFromOutput && DragSourcePinIndex < SrcNode.InputPins.Num())
 				{
-					DrawConnection(DragConnectionEnd, StartPos, DragColor, AllottedGeometry, OutDrawElements, LayerId);
+					StartPos = GetPinPosition(SrcNode, SrcNode.InputPins[DragSourcePinIndex]);
+					bValidPin = true;
+				}
+
+				if (bValidPin)
+				{
+					FLinearColor DragColor(0.8f, 0.8f, 0.2f, 0.8f);
+					if (bDraggingFromOutput)
+					{
+						DrawConnection(StartPos, DragConnectionEnd, DragColor, AllottedGeometry, OutDrawElements, LayerId);
+					}
+					else
+					{
+						DrawConnection(DragConnectionEnd, StartPos, DragColor, AllottedGeometry, OutDrawElements, LayerId);
+					}
 				}
 			}
 		}
@@ -2259,6 +2407,22 @@ FReply SWorkflowGraphEditor::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 			// Alt-click on empty space — fall through to normal handling
 		}
 
+		// Check for group sequence pin hit first (takes priority on group border)
+		{
+			int32 HitGroupIdx = -1;
+			if (HitTestGroupSequencePin(LocalPos, HitGroupIdx))
+			{
+				// Start dragging from a group sequence input pin
+				InteractionMode = EInteractionMode::DraggingConnection;
+				bDraggingFromOutput = false;
+				DragSourceNodeId = Groups[HitGroupIdx].SequenceTargetId();
+				DragSourcePinIndex = 0;
+				DragSourcePinType = TEXT("*");
+				DragConnectionEnd = LocalPos;
+				return FReply::Handled().CaptureMouse(SharedThis(this));
+			}
+		}
+
 		// Check for pin hit first
 		FGraphPin HitPin;
 		if (HitTestPin(LocalPos, HitPin))
@@ -2484,34 +2648,61 @@ FReply SWorkflowGraphEditor::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 			}
 			else if (!bDraggingFromOutput && !HitPin.bIsInput)
 			{
-				// Dragged from input to output
-				AddConnection(HitPin.OwnerNodeId, HitPin.PinIndex, DragSourceNodeId,
-					Nodes[NodeIndexMap[DragSourceNodeId]].InputPins[DragSourcePinIndex].Name);
+				// If drag source is a group pseudo-ID and we dropped on an output pin
+				if (DragSourceNodeId.Contains(TEXT(".__seqin__")))
+				{
+					AddConnection(HitPin.OwnerNodeId, HitPin.PinIndex, DragSourceNodeId, TEXT("__seq_in__"));
+				}
+				else
+				{
+					// Dragged from input to output
+					AddConnection(HitPin.OwnerNodeId, HitPin.PinIndex, DragSourceNodeId,
+						Nodes[NodeIndexMap[DragSourceNodeId]].InputPins[DragSourcePinIndex].Name);
+				}
 			}
 		}
 		else
 		{
-			// Dropped on empty space — show a filtered node menu and auto-connect
-			FVector2D GraphPos = LocalToGraph(LocalPos);
-			FVector2D ScreenPos = MouseEvent.GetScreenSpacePosition();
+			// Check if dropped on a group's sequence input pin
+			int32 DropGroupIdx = -1;
+			if (HitTestGroupSequencePin(LocalPos, DropGroupIdx))
+			{
+				if (bDraggingFromOutput)
+				{
+					// Dragged from output (e.g., Sequence "Then N") to group input
+					AddConnection(DragSourceNodeId, DragSourcePinIndex,
+						Groups[DropGroupIdx].SequenceTargetId(), TEXT("__seq_in__"));
+				}
+				// Dragged from group input to group input — nothing to do
+			}
+			else
+			{
+				// Dropped on empty space — show a filtered node menu and auto-connect
+				FVector2D GraphPos = LocalToGraph(LocalPos);
+				FVector2D ScreenPos = MouseEvent.GetScreenSpacePosition();
 
-			// Capture drag state before it gets cleared
-			FString CapturedSourceNodeId = DragSourceNodeId;
-			int32 CapturedSourcePinIndex = DragSourcePinIndex;
-			FString CapturedSourcePinType = DragSourcePinType;
-			bool bCapturedFromOutput = bDraggingFromOutput;
+				// Capture drag state before it gets cleared
+				FString CapturedSourceNodeId = DragSourceNodeId;
+				int32 CapturedSourcePinIndex = DragSourcePinIndex;
+				FString CapturedSourcePinType = DragSourcePinType;
+				bool bCapturedFromOutput = bDraggingFromOutput;
 
-			TSharedRef<SWidget> FilteredMenu = BuildFilteredNodeMenu(
-				GraphPos, CapturedSourcePinType, bCapturedFromOutput,
-				CapturedSourceNodeId, CapturedSourcePinIndex);
+				// Don't show filtered menu when dragging from a group pin
+				if (!CapturedSourceNodeId.Contains(TEXT(".__seqin__")))
+				{
+					TSharedRef<SWidget> FilteredMenu = BuildFilteredNodeMenu(
+						GraphPos, CapturedSourcePinType, bCapturedFromOutput,
+						CapturedSourceNodeId, CapturedSourcePinIndex);
 
-			FSlateApplication::Get().PushMenu(
-				SharedThis(this),
-				FWidgetPath(),
-				FilteredMenu,
-				ScreenPos,
-				FPopupTransitionEffect::ContextMenu
-			);
+					FSlateApplication::Get().PushMenu(
+						SharedThis(this),
+						FWidgetPath(),
+						FilteredMenu,
+						ScreenPos,
+						FPopupTransitionEffect::ContextMenu
+					);
+				}
+			}
 		}
 	}
 	else if (InteractionMode == EInteractionMode::BoxSelecting)
@@ -2681,6 +2872,11 @@ FReply SWorkflowGraphEditor::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 							PushUndoSnapshot();
 							if (HitGroupIdx < Groups.Num())
 							{
+								// Clean up any sequence connections targeting this group
+								FString PseudoId = Groups[HitGroupIdx].SequenceTargetId();
+								Connections.RemoveAll([&PseudoId](const FGraphConnection& C) {
+									return C.TargetNodeId == PseudoId;
+								});
 								Groups.RemoveAt(HitGroupIdx);
 								NotifyGraphChanged();
 							}
@@ -3626,7 +3822,7 @@ TSharedRef<SWidget> SWorkflowGraphEditor::BuildNodeCategoryMenu(FVector2D GraphP
 			{ UE3DLoaderClassType, TEXT("UE 3D Loader"), TEXT("Browse for a local 3D model file (GLB/OBJ/FBX), import it into the UE Content Browser, and optionally place it in the level") },
 			{ UEImageBridgeClassType, TEXT("UE Image Bridge"), TEXT("Saves the upstream image to disk (SaveImage) and outputs it as a loadable reference (LoadImage). Creates a disk-based handoff between image generation and downstream nodes like Tripo.") },
 			{ UE3DAssetExportClassType, TEXT("UE 3D Asset Export"), TEXT("Downloads a generated 3D model and imports it into the UE Content Browser as a .uasset with collision, Nanite, and auto-placement options") },
-			{ UEPromptAdherenceClassType, TEXT("UE Prompt Adherence"), TEXT("Controls how closely the generation follows the prompt vs. AI creativity. Lower values = closer to prompt, higher values = more creative. Overrides CFG/steps/denoise on all KSampler nodes in the graph.") },
+			{ UEPromptAdherenceClassType, TEXT("UE Prompt Adherence"), TEXT("Controls how closely the generation follows the prompt vs. AI creativity. Lower values = closer to prompt, higher values = more creative. Overrides CFG/steps/denoise on KSampler nodes, image_fidelity/human_fidelity on Kling Image nodes, and cfg_scale on Kling Video nodes.") },
 			{ UEImageUpresClassType, TEXT("UE Image Upres"), TEXT("Upscales an image using configurable interpolation (nearest, bilinear, bicubic, lanczos, area) and converts between 8-bit and 16-bit colour depth. Maps to ImageScaleBy + a bit-depth conversion pass in ComfyUI.") },
 			{ UESequenceClassType, TEXT("UE Sequence"), TEXT("Executes downstream nodes in stages — all nodes connected to Then 0 complete before Then 1 starts, and so on. Like Blueprint Sequence nodes.") },
 			{ UEVideoToImageClassType, TEXT("UE Video to Image"), TEXT("Extracts a single frame from a video file (using FFmpeg) and outputs it as an IMAGE. Browse for a video, choose the frame number, and connect downstream to any node expecting an image input.") },
@@ -5042,9 +5238,15 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 	if (AdherenceOverride >= 0.0f)
 	{
 		float Adh = AdherenceOverride;
+
+		// KSampler overrides
 		float OverrideCFG = FMath::Lerp(3.0f, 14.0f, Adh);
 		int32 OverrideSteps = FMath::RoundToInt(FMath::Lerp(12.0f, 45.0f, Adh));
 		float OverrideDenoise = FMath::Lerp(0.95f, 0.15f, Adh); // Inverted: low adherence = high denoise
+
+		// Kling overrides (fidelity fields are already 0-1 and map directly to adherence)
+		float OverrideKlingFidelity = Adh;
+		float OverrideKlingCfgScale = FMath::Lerp(0.3f, 1.0f, Adh);
 
 		for (auto& WfPair : Workflow->Values)
 		{
@@ -5054,40 +5256,82 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 			FString ClassType;
 			if (!(*NodeObjPtr)->TryGetStringField(TEXT("class_type"), ClassType)) continue;
 
-			// Apply to any KSampler variant (KSampler, KSamplerAdvanced, etc.)
-			if (!ClassType.Contains(TEXT("KSampler"))) continue;
-
 			const TSharedPtr<FJsonObject>* InputsObjPtr;
 			if (!(*NodeObjPtr)->TryGetObjectField(TEXT("inputs"), InputsObjPtr)) continue;
 
-			// Override cfg, steps, and denoise if they exist as widget values (not links)
-			if ((*InputsObjPtr)->HasField(TEXT("cfg")))
+			// --- KSampler variants (KSampler, KSamplerAdvanced, etc.) ---
+			if (ClassType.Contains(TEXT("KSampler")))
 			{
-				const TSharedPtr<FJsonValue>& CfgVal = (*InputsObjPtr)->Values.FindChecked(TEXT("cfg"));
-				if (CfgVal->Type != EJson::Array) // Not a link
+				// Override cfg, steps, and denoise if they exist as widget values (not links)
+				if ((*InputsObjPtr)->HasField(TEXT("cfg")))
 				{
-					(*InputsObjPtr)->SetNumberField(TEXT("cfg"), OverrideCFG);
+					const TSharedPtr<FJsonValue>& CfgVal = (*InputsObjPtr)->Values.FindChecked(TEXT("cfg"));
+					if (CfgVal->Type != EJson::Array) // Not a link
+					{
+						(*InputsObjPtr)->SetNumberField(TEXT("cfg"), OverrideCFG);
+					}
 				}
-			}
-			if ((*InputsObjPtr)->HasField(TEXT("steps")))
-			{
-				const TSharedPtr<FJsonValue>& StepsVal = (*InputsObjPtr)->Values.FindChecked(TEXT("steps"));
-				if (StepsVal->Type != EJson::Array)
+				if ((*InputsObjPtr)->HasField(TEXT("steps")))
 				{
-					(*InputsObjPtr)->SetNumberField(TEXT("steps"), (int64)OverrideSteps);
+					const TSharedPtr<FJsonValue>& StepsVal = (*InputsObjPtr)->Values.FindChecked(TEXT("steps"));
+					if (StepsVal->Type != EJson::Array)
+					{
+						(*InputsObjPtr)->SetNumberField(TEXT("steps"), (int64)OverrideSteps);
+					}
 				}
-			}
-			if ((*InputsObjPtr)->HasField(TEXT("denoise")))
-			{
-				const TSharedPtr<FJsonValue>& DenoiseVal = (*InputsObjPtr)->Values.FindChecked(TEXT("denoise"));
-				if (DenoiseVal->Type != EJson::Array)
+				if ((*InputsObjPtr)->HasField(TEXT("denoise")))
 				{
-					(*InputsObjPtr)->SetNumberField(TEXT("denoise"), OverrideDenoise);
+					const TSharedPtr<FJsonValue>& DenoiseVal = (*InputsObjPtr)->Values.FindChecked(TEXT("denoise"));
+					if (DenoiseVal->Type != EJson::Array)
+					{
+						(*InputsObjPtr)->SetNumberField(TEXT("denoise"), OverrideDenoise);
+					}
 				}
-			}
 
-			UE_LOG(LogTemp, Log, TEXT("ViewGen Export: Prompt Adherence override (%.0f%%) → node '%s': cfg=%.1f, steps=%d, denoise=%.2f"),
-				Adh * 100.0f, *WfPair.Key, OverrideCFG, OverrideSteps, OverrideDenoise);
+				UE_LOG(LogTemp, Log, TEXT("ViewGen Export: Prompt Adherence override (%.0f%%) → KSampler '%s': cfg=%.1f, steps=%d, denoise=%.2f"),
+					Adh * 100.0f, *WfPair.Key, OverrideCFG, OverrideSteps, OverrideDenoise);
+			}
+			// --- Kling Image Generation ---
+			else if (ClassType == TEXT("KlingImageGenerationNode"))
+			{
+				// image_fidelity: how closely output matches the reference image (0-1)
+				if ((*InputsObjPtr)->HasField(TEXT("image_fidelity")))
+				{
+					const TSharedPtr<FJsonValue>& Val = (*InputsObjPtr)->Values.FindChecked(TEXT("image_fidelity"));
+					if (Val->Type != EJson::Array)
+					{
+						(*InputsObjPtr)->SetNumberField(TEXT("image_fidelity"), OverrideKlingFidelity);
+					}
+				}
+				// human_fidelity: how closely faces/people match the reference (0-1)
+				if ((*InputsObjPtr)->HasField(TEXT("human_fidelity")))
+				{
+					const TSharedPtr<FJsonValue>& Val = (*InputsObjPtr)->Values.FindChecked(TEXT("human_fidelity"));
+					if (Val->Type != EJson::Array)
+					{
+						(*InputsObjPtr)->SetNumberField(TEXT("human_fidelity"), OverrideKlingFidelity);
+					}
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("ViewGen Export: Prompt Adherence override (%.0f%%) → Kling Image '%s': image_fidelity=%.2f, human_fidelity=%.2f"),
+					Adh * 100.0f, *WfPair.Key, OverrideKlingFidelity, OverrideKlingFidelity);
+			}
+			// --- Kling Video Generation ---
+			else if (ClassType == TEXT("KlingImage2VideoNode"))
+			{
+				// cfg_scale: guidance scale controlling prompt adherence (0-1)
+				if ((*InputsObjPtr)->HasField(TEXT("cfg_scale")))
+				{
+					const TSharedPtr<FJsonValue>& Val = (*InputsObjPtr)->Values.FindChecked(TEXT("cfg_scale"));
+					if (Val->Type != EJson::Array)
+					{
+						(*InputsObjPtr)->SetNumberField(TEXT("cfg_scale"), OverrideKlingCfgScale);
+					}
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("ViewGen Export: Prompt Adherence override (%.0f%%) → Kling Video '%s': cfg_scale=%.2f"),
+					Adh * 100.0f, *WfPair.Key, OverrideKlingCfgScale);
+			}
 		}
 	}
 
@@ -7311,12 +7555,18 @@ int32 SWorkflowGraphEditor::HitTestConnection(FVector2D LocalPos, float Toleranc
 	{
 		const FGraphConnection& Conn = Connections[ConnIdx];
 
+		bool bIsGroupTarget = Conn.TargetNodeId.Contains(TEXT(".__seqin__"));
+
 		const int32* SrcIdx = NodeIndexMap.Find(Conn.SourceNodeId);
-		const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
-		if (!SrcIdx || !DstIdx) continue;
+		if (!SrcIdx) continue;
+
+		if (!bIsGroupTarget)
+		{
+			const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
+			if (!DstIdx) continue;
+		}
 
 		const FGraphNode& SrcNode = Nodes[*SrcIdx];
-		const FGraphNode& DstNode = Nodes[*DstIdx];
 
 		// Get start position (output pin)
 		FVector2D StartPos = FVector2D::ZeroVector;
@@ -7329,16 +7579,33 @@ int32 SWorkflowGraphEditor::HitTestConnection(FVector2D LocalPos, float Toleranc
 			continue;
 		}
 
-		// Get end position (input pin)
+		// Get end position (input pin or group sequence pin)
 		FVector2D EndPos = FVector2D::ZeroVector;
 		bool bFoundPin = false;
-		for (const auto& Pin : DstNode.InputPins)
+		if (bIsGroupTarget)
 		{
-			if (Pin.Name == Conn.TargetInputName)
+			int32 GIdx = FindGroupBySequenceTargetId(Conn.TargetNodeId);
+			if (GIdx >= 0)
 			{
-				EndPos = GetPinPosition(DstNode, Pin);
+				EndPos = GetGroupSequencePinPosition(Groups[GIdx]);
 				bFoundPin = true;
-				break;
+			}
+		}
+		else
+		{
+			const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
+			if (DstIdx)
+			{
+				const FGraphNode& DstNode = Nodes[*DstIdx];
+				for (const auto& Pin : DstNode.InputPins)
+				{
+					if (Pin.Name == Conn.TargetInputName)
+					{
+						EndPos = GetPinPosition(DstNode, Pin);
+						bFoundPin = true;
+						break;
+					}
+				}
 			}
 		}
 		if (!bFoundPin) continue;
@@ -7372,11 +7639,16 @@ int32 SWorkflowGraphEditor::HitTestConnection(FVector2D LocalPos, float Toleranc
 FVector2D SWorkflowGraphEditor::EvalConnectionBezier(const FGraphConnection& Conn, float t) const
 {
 	const int32* SrcIdx = NodeIndexMap.Find(Conn.SourceNodeId);
-	const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
-	if (!SrcIdx || !DstIdx) return FVector2D::ZeroVector;
+	if (!SrcIdx) return FVector2D::ZeroVector;
+
+	bool bIsGroupTarget = Conn.TargetNodeId.Contains(TEXT(".__seqin__"));
+	if (!bIsGroupTarget)
+	{
+		const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
+		if (!DstIdx) return FVector2D::ZeroVector;
+	}
 
 	const FGraphNode& SrcNode = Nodes[*SrcIdx];
-	const FGraphNode& DstNode = Nodes[*DstIdx];
 
 	FVector2D StartPos = FVector2D::ZeroVector;
 	if (Conn.SourceOutputIndex < SrcNode.OutputPins.Num())
@@ -7385,12 +7657,28 @@ FVector2D SWorkflowGraphEditor::EvalConnectionBezier(const FGraphConnection& Con
 	}
 
 	FVector2D EndPos = FVector2D::ZeroVector;
-	for (const auto& Pin : DstNode.InputPins)
+	if (bIsGroupTarget)
 	{
-		if (Pin.Name == Conn.TargetInputName)
+		int32 GIdx = FindGroupBySequenceTargetId(Conn.TargetNodeId);
+		if (GIdx >= 0)
 		{
-			EndPos = GetPinPosition(DstNode, Pin);
-			break;
+			EndPos = GetGroupSequencePinPosition(Groups[GIdx]);
+		}
+	}
+	else
+	{
+		const int32* DstIdx = NodeIndexMap.Find(Conn.TargetNodeId);
+		if (DstIdx)
+		{
+			const FGraphNode& DstNode = Nodes[*DstIdx];
+			for (const auto& Pin : DstNode.InputPins)
+			{
+				if (Pin.Name == Conn.TargetInputName)
+				{
+					EndPos = GetPinPosition(DstNode, Pin);
+					break;
+				}
+			}
 		}
 	}
 
@@ -7452,5 +7740,102 @@ void SWorkflowGraphEditor::ResolveRerouteSource(const FString& NodeId, FString& 
 
 // Override GetPinPosition behavior for reroute nodes is handled by the existing
 // method — reroute nodes have size 24x24 so pins land at the left/right center.
+
+// ============================================================================
+// Drag-and-Drop (Gallery Thumbnails)
+// ============================================================================
+
+FReply SWorkflowGraphEditor::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<FViewGenGalleryDragOp> GalleryOp = DragDropEvent.GetOperationAs<FViewGenGalleryDragOp>();
+	if (GalleryOp.IsValid())
+	{
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+FReply SWorkflowGraphEditor::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<FViewGenGalleryDragOp> GalleryOp = DragDropEvent.GetOperationAs<FViewGenGalleryDragOp>();
+	if (!GalleryOp.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	// Convert drop position to graph coordinates
+	FVector2D LocalPos = MyGeometry.AbsoluteToLocal(DragDropEvent.GetScreenSpacePosition());
+	FVector2D GraphPos = LocalToGraph(LocalPos);
+
+	// Determine which node type to create
+	FString ClassType;
+	bool bIsVideo = !GalleryOp->VideoPath.IsEmpty();
+
+	if (bIsVideo)
+	{
+		// Try VHS_LoadVideo first, fall back to LoadVideo
+		if (FComfyNodeDatabase::Get().FindNode(TEXT("VHS_LoadVideo")))
+		{
+			ClassType = TEXT("VHS_LoadVideo");
+		}
+		else if (FComfyNodeDatabase::Get().FindNode(TEXT("LoadVideo")))
+		{
+			ClassType = TEXT("LoadVideo");
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FViewGenGalleryDragOp: No LoadVideo node type found in database"));
+			return FReply::Handled();
+		}
+	}
+	else
+	{
+		ClassType = TEXT("LoadImage");
+		if (!FComfyNodeDatabase::Get().FindNode(ClassType))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FViewGenGalleryDragOp: LoadImage node type not found in database"));
+			return FReply::Handled();
+		}
+	}
+
+	// Create the node
+	FString NodeId = AddNodeByType(ClassType, GraphPos);
+
+	// Set the widget value on the newly created node
+	const int32* IdxPtr = NodeIndexMap.Find(NodeId);
+	if (IdxPtr)
+	{
+		FGraphNode& Node = Nodes[*IdxPtr];
+
+		if (bIsVideo)
+		{
+			// Try "video" widget first, then "file"
+			if (Node.WidgetValues.Contains(TEXT("video")))
+			{
+				Node.WidgetValues[TEXT("video")] = GalleryOp->VideoPath;
+			}
+			else if (Node.WidgetValues.Contains(TEXT("file")))
+			{
+				Node.WidgetValues[TEXT("file")] = GalleryOp->VideoPath;
+			}
+		}
+		else
+		{
+			if (Node.WidgetValues.Contains(TEXT("image")))
+			{
+				Node.WidgetValues[TEXT("image")] = GalleryOp->ImagePath;
+			}
+		}
+	}
+
+	// Set thumbnail if texture is valid
+	if (GalleryOp->Texture)
+	{
+		SetNodeThumbnail(NodeId, GalleryOp->Texture);
+	}
+
+	NotifyGraphChanged();
+	return FReply::Handled();
+}
 
 #undef LOCTEXT_NAMESPACE

@@ -15,7 +15,9 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Misc/Base64.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "HAL/PlatformFilemanager.h"
 #include "IImageWrapperModule.h"
 #include "IImageWrapper.h"
 #include "Engine/Texture2D.h"
@@ -2912,6 +2914,23 @@ void FGenAIHttpClient::OnImageFetchComplete(FHttpRequestPtr Request, FHttpRespon
 	}
 
 	const TArray<uint8>& ImageData = Response->GetContent();
+
+	// Save the raw image bytes to disk
+	{
+		FString Dir = FPaths::ProjectSavedDir() / TEXT("ViewGen") / TEXT("Results");
+		IFileManager::Get().MakeDirectory(*Dir, true);
+		FString FullPath = Dir / LastResultFilename;
+		if (FFileHelper::SaveArrayToFile(ImageData, *FullPath))
+		{
+			LastSavedImagePath = FullPath;
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: Saved result image to %s"), *LastSavedImagePath);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen: Failed to save result image to %s"), *FullPath);
+		}
+	}
+
 	UTexture2D* ResultTexture = DecodeImageToTexture(ImageData);
 
 	if (!ResultTexture)

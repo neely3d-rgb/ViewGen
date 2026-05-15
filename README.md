@@ -8,9 +8,11 @@ An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer a
 
 - **Viewport & Depth Capture** — Capture the editor viewport and engine depth buffer in one click, ready for img2img and ControlNet pipelines.
 - **Multiple Generation Modes** — img2img (viewport + prompt), Depth + Prompt (ControlNet), Prompt Only (txt2img), Gemini (Nano Banana 2), and Kling (Image 3.0).
-- **ComfyUI Integration** — Visual node-graph workflow editor that maps directly to ComfyUI API workflows. Ships with 30+ ready-to-use workflow templates. Auto-detects Flux models and switches to the correct split-loader path.
-- **Gemini & Kling Support** — Direct integration with Google Gemini and Kling AI image generation, with mode-specific settings for model selection, aspect ratio, and image fidelity.
+- **ComfyUI Integration** — Visual node-graph workflow editor that maps directly to ComfyUI API workflows. Ships with 30+ ready-to-use workflow templates. Auto-detects Flux models and switches to the correct split-loader path. Supports V3 dynamic nested inputs for newer nodes (ByteDance Seedance, etc.).
+- **Gemini & Kling Support** — Direct integration with Google Gemini and Kling AI image generation, with mode-specific settings for model selection, aspect ratio, and image fidelity. Requires a ComfyUI Platform API key (generate at https://platform.comfy.org).
 - **Meshy 3D Generation** — Text-to-3D and image-to-3D model generation via the Meshy API, with in-editor preview.
+- **Drag-to-Graph** — Drag result thumbnails directly onto the graph editor to create LoadImage or LoadVideo nodes with the file path preloaded and preview thumbnail applied. A horizontal gallery strip appears at the bottom of the Graph Editor tab for quick access.
+- **UE Prompt Adherence Node** — A graph-level control node that globally adjusts generation parameters across KSampler nodes (CFG, steps, denoise), Kling Image nodes (image_fidelity, human_fidelity), and Kling Video nodes (cfg_scale) from a single slider.
 - **GLB Extract + Repack Pipeline** — Load AI-generated GLB models, extract textures for upscaling through ComfyUI workflows, and repack into a new GLB with replaced textures. Supports DIFFUSE, ORM (channel-packed Occlusion/Roughness/Metallic), and NORMAL map pins.
 - **UV Repack (xatlas)** — Optional xatlas-powered UV atlas repacking for AI-generated 3D models. Generates clean UV layouts, bakes textures from old UVs to new UVs via software rasterization with edge-padding dilation to prevent seam artifacts. Includes a progress dialog with per-step feedback.
 - **Segmentation Capture** — Object and material segmentation masks for targeted inpainting and compositing.
@@ -25,7 +27,7 @@ An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer a
 ViewGen uses a tabbed interface with the viewport capture and results panel at the top, and three tabs below:
 
 - **Basic** — Artist-friendly controls for prompt, generation mode, checkpoint/LoRA selection, resolution, steps, seed, and the Generate button. Mode-specific settings (Gemini, Kling) appear conditionally. An Advanced section provides access to depth/ControlNet, hi-res fix, defaults, and presets.
-- **Graph Editor** — Full visual node-graph editor for building and editing ComfyUI workflows. Includes a node details panel and toolbar for direct graph-to-ComfyUI generation.
+- **Graph Editor** — Full visual node-graph editor for building and editing ComfyUI workflows. Includes a node details panel, toolbar for direct graph-to-ComfyUI generation, and a horizontal result gallery strip for drag-and-drop node creation.
 - **Connection** — Server configuration (ComfyUI URL, API keys, timeout, model paths) with Test Connection and Refresh Models buttons.
 
 ## Requirements
@@ -65,7 +67,8 @@ ViewGen uses a tabbed interface with the viewport capture and results panel at t
 2. Switch to the **Connection** tab and enter your ComfyUI server address (default: `http://127.0.0.1:8188`).
 3. Click **Test Connection** to verify connectivity and populate model lists.
 4. Optionally enter API keys for Gemini, Kling, or Meshy.
-5. Switch to the **Basic** tab to select a generation mode, checkpoint, and start generating.
+5. For **Gemini (Nano Banana 2)** and **Kling** nodes: these are ComfyUI API nodes, not standard custom nodes. They require a ComfyUI Platform API key — sign up at https://platform.comfy.org, generate a key, and enter it under "ComfyUI API Key" in the Connection tab. They will not appear in ComfyUI Manager.
+6. Switch to the **Basic** tab to select a generation mode, checkpoint, and start generating.
 
 ## Included Workflows
 

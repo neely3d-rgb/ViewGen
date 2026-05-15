@@ -70,6 +70,20 @@ void FComfyNodeDatabase::ParseObjectInfo(TSharedPtr<FJsonObject> Root)
 		}
 
 		FComfyNodeDef Def = ParseSingleNode(Pair.Key, *NodeInfoPtr);
+
+		// Diagnostic: log all inputs for nodes containing "ByteDance" or "Seedance"
+		if (Pair.Key.Contains(TEXT("ByteDance")) || Pair.Key.Contains(TEXT("Seedance")) ||
+			Def.DisplayName.Contains(TEXT("ByteDance")) || Def.DisplayName.Contains(TEXT("Seedance")))
+		{
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: [V3 Diag] Node '%s' (%s) has %d inputs:"),
+				*Pair.Key, *Def.DisplayName, Def.Inputs.Num());
+			for (const auto& Input : Def.Inputs)
+			{
+				UE_LOG(LogTemp, Log, TEXT("ViewGen: [V3 Diag]   '%s' type='%s' isLink=%d combo=%d"),
+					*Input.Name, *Input.Type, Input.IsLinkType() ? 1 : 0, Input.ComboOptions.Num());
+			}
+		}
+
 		NodeDefs.Add(Pair.Key, MoveTemp(Def));
 	}
 
@@ -114,6 +128,15 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 
 			for (const auto& InputPair : GroupObj->Values)
 			{
+				// Skip if this input was already added (e.g. by V3 nested parsing with
+				// a more specific type like IMAGE instead of top-level STRING)
+				bool bAlreadyExists = false;
+				for (const auto& Existing : Def.Inputs)
+				{
+					if (Existing.Name == InputPair.Key) { bAlreadyExists = true; break; }
+				}
+				if (bAlreadyExists) continue;
+
 				FComfyInputDef InputDef;
 				InputDef.Name = InputPair.Key;
 				InputDef.bRequired = bRequired;
@@ -170,15 +193,18 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 												InputDef.ComboOptions.Add(Key);
 											}
 
-											// Parse nested conditional inputs — these become additional widgets
-											// on the node with dot-notation keys: "generate_type.pbr"
+											// Parse nested conditional inputs — these become additional inputs
+											// on the node with dot-notation keys: "model.prompt", "model.reference_images"
+											// V3 nodes may put link-type inputs (IMAGE, VIDEO, AUDIO) under "optional"
 											const TSharedPtr<FJsonObject>* NestedInputs;
 											if ((*OptObj)->TryGetObjectField(TEXT("inputs"), NestedInputs))
 											{
-												const TSharedPtr<FJsonObject>* NestedReq;
-												if ((*NestedInputs)->TryGetObjectField(TEXT("required"), NestedReq))
+												// Helper: parse one group of nested inputs (required or optional)
+												auto ParseNestedGroup = [&Def, &InputPair, &ClassType](const TSharedPtr<FJsonObject>& GroupObj)
 												{
-													for (const auto& SubPair : (*NestedReq)->Values)
+													if (!GroupObj.IsValid()) return;
+
+													for (const auto& SubPair : GroupObj->Values)
 													{
 														// Build a dot-notation key: "parentName.subName"
 														FString SubKey = InputPair.Key + TEXT(".") + SubPair.Key;
@@ -250,6 +276,18 @@ FComfyNodeDef FComfyNodeDatabase::ParseSingleNode(const FString& ClassType, TSha
 
 														Def.Inputs.Add(MoveTemp(SubDef));
 													}
+												};
+
+												// Parse both required AND optional nested inputs
+												const TSharedPtr<FJsonObject>* NestedReq;
+												if ((*NestedInputs)->TryGetObjectField(TEXT("required"), NestedReq))
+												{
+													ParseNestedGroup(*NestedReq);
+												}
+												const TSharedPtr<FJsonObject>* NestedOpt;
+												if ((*NestedInputs)->TryGetObjectField(TEXT("optional"), NestedOpt))
+												{
+													ParseNestedGroup(*NestedOpt);
 												}
 											}
 										}

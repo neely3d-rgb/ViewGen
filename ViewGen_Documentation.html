@@ -241,7 +241,8 @@
   <li><b>Viewport Capture</b> &mdash; Captures the active editor viewport at native resolution with full camera metadata (FOV, focal length, position, rotation).</li>
   <li><b>Depth Map Extraction</b> &mdash; Renders a linearized depth pass from the viewport camera for use as a ControlNet guide.</li>
   <li><b>Multiple Generation Modes</b> &mdash; img2img, depth+prompt, text-only, Gemini, and Kling pipelines with per-mode parameter controls.</li>
-  <li><b>Node Graph Editor</b> &mdash; Interactive drag-and-drop graph editor supporting all ComfyUI node types plus custom UE source nodes.</li>
+  <li><b>Node Graph Editor</b> &mdash; Interactive drag-and-drop graph editor supporting all ComfyUI node types plus custom UE source nodes. Includes V3 dynamic nested input parsing for newer nodes (ByteDance Seedance 2.0, etc.).</li>
+  <li><b>Drag-to-Graph</b> &mdash; Drag result thumbnails from the gallery directly onto the graph editor to automatically create LoadImage or LoadVideo nodes with file paths and preview thumbnails preloaded.</li>
   <li><b>Video Generation</b> &mdash; Image-to-video via Kling Video, Wan I2V, and Google Veo3.</li>
   <li><b>3D Model Pipeline</b> &mdash; Convert generated images to 3D meshes via Meshy, import as UE assets with collision and Nanite support.</li>
   <li><b>GLB Texture Pipeline</b> &mdash; Extract, process, and repack textures on GLB models with optional xatlas UV repack and bilinear upres (2x/4x).</li>
@@ -285,8 +286,11 @@
 
 <h4>ComfyUI API Key (optional)</h4>
 <p>
-  Required for paid API nodes such as Nano Banana 2 and other partner nodes available through the ComfyUI platform.
-  If you only use local ComfyUI nodes (Stable Diffusion, ControlNet, etc.), you do not need this key.
+  Required for paid API nodes such as <b>Nano Banana 2</b> (GeminiNanoBanana2), <b>Kling Image</b> (KlingImageGenerationNode),
+  and <b>Kling Video</b> (KlingImage2VideoNode). These are ComfyUI API nodes &mdash; they are <em>not</em> traditional custom nodes
+  and will not appear in ComfyUI Manager. They are server-side nodes that become available when your ComfyUI instance is
+  connected to the platform with a valid API key. If you only use local ComfyUI nodes (Stable Diffusion, ControlNet, etc.),
+  you do not need this key.
 </p>
 <p><b>How to get your ComfyUI API key:</b></p>
 <ol>
@@ -549,7 +553,7 @@
     <tr><td>UE Viewport Capture</td><td>IMAGE</td><td>Captures the editor viewport. Converted to a LoadImage node with the uploaded viewport PNG.</td></tr>
     <tr><td>UE Depth Map</td><td>IMAGE</td><td>Extracts depth from the viewport camera. Reuses existing capture if available. Converted to LoadImage.</td></tr>
     <tr><td>UE Camera Data</td><td>STRING</td><td>Injects auto-generated camera metadata (FOV, focal length, angle) into target prompt fields.</td></tr>
-    <tr><td>UE Prompt Adherence</td><td>&mdash;</td><td>Global override: adjusts CFG, steps, and denoise on all KSampler nodes in the graph.</td></tr>
+    <tr><td>UE Prompt Adherence</td><td>&mdash;</td><td>Global override: adjusts CFG, steps, and denoise on KSampler nodes; image_fidelity and human_fidelity on Kling Image nodes; and cfg_scale on Kling Video nodes. A single adherence slider (0&ndash;1) controls all supported node types simultaneously.</td></tr>
     <tr><td>UE Image Bridge</td><td>IMAGE</td><td>Saves the upstream image to disk (SaveImage) and passes it through. Creates a disk-based handoff.</td></tr>
     <tr><td>UE Meshy Import</td><td>&mdash;</td><td>Downloads a Meshy Image-to-3D result and imports it as a UE asset.</td></tr>
     <tr><td>UE Save 3D Model</td><td>&mdash;</td><td>Downloads a 3D model (GLB/OBJ/FBX) from ComfyUI mesh nodes and imports into UE.</td></tr>

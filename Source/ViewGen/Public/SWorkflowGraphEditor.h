@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
 #include "ComfyNodeDatabase.h"
 #include "Dom/JsonObject.h"
 
@@ -110,6 +111,9 @@ struct FGraphGroup
 
 	/** Whether this group is currently selected */
 	bool bSelected = false;
+
+	/** Pseudo-node ID used as TargetNodeId when a sequence connection targets this group */
+	FString SequenceTargetId() const { return Id + TEXT(".__seqin__"); }
 };
 
 /** A single node instance in the graph editor */
@@ -218,6 +222,34 @@ struct FGraphNode
 			|| ClassType == UETextureUpscaleClassType
 			|| ClassType == UEGLBExtractClassType
 			|| ClassType == UEGLBRepackClassType;
+	}
+};
+
+// ============================================================================
+// Gallery Drag-Drop Operation
+// ============================================================================
+
+/** Drag-drop operation carrying a ViewGen gallery result thumbnail */
+class FViewGenGalleryDragOp : public FDecoratedDragDropOp
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FViewGenGalleryDragOp, FDecoratedDragDropOp)
+
+	UTexture2D* Texture = nullptr;
+	FString ImagePath;
+	FString VideoPath;
+	int32 HistoryIndex = -1;
+
+	static TSharedRef<FViewGenGalleryDragOp> Create(int32 InIndex, UTexture2D* InTexture, const FString& InImagePath, const FString& InVideoPath)
+	{
+		TSharedRef<FViewGenGalleryDragOp> Op = MakeShareable(new FViewGenGalleryDragOp());
+		Op->HistoryIndex = InIndex;
+		Op->Texture = InTexture;
+		Op->ImagePath = InImagePath;
+		Op->VideoPath = InVideoPath;
+		Op->DefaultHoverText = FText::FromString(InVideoPath.IsEmpty() ? TEXT("Load Image") : TEXT("Load Video"));
+		Op->Construct();
+		return Op;
 	}
 };
 
@@ -427,6 +459,8 @@ public:
 	virtual FReply OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
 	virtual bool IsInteractable() const override { return true; }
@@ -572,6 +606,18 @@ private:
 
 	/** Compute the local-space position of a pin */
 	FVector2D GetPinPosition(const FGraphNode& Node, const FGraphPin& Pin) const;
+
+	/** Compute the local-space position of a group's sequence input pin */
+	FVector2D GetGroupSequencePinPosition(const FGraphGroup& Group) const;
+
+	/** Hit-test group sequence input pins. Returns true and sets OutGroupIndex if hit. */
+	bool HitTestGroupSequencePin(FVector2D LocalPos, int32& OutGroupIndex) const;
+
+	/** Find a group index by its sequence pseudo-node ID. Returns -1 if not found. */
+	int32 FindGroupBySequenceTargetId(const FString& TargetId) const;
+
+	/** Get IDs of all nodes whose bounding box is fully inside the given group */
+	TArray<FString> GetNodeIdsInsideGroup(const FGraphGroup& Group) const;
 
 	// ---- Node Construction ----
 

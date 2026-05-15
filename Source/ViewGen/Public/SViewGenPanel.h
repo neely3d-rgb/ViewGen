@@ -67,6 +67,7 @@ public:
 	 *  GC compaction (triggered by save operations) can invalidate packed indices in
 	 *  TObjectPtr members of FSlateBrush objects that are not part of a UPROPERTY chain. */
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	virtual FReply OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
 private:
 	// ---- GC Safety ----
@@ -530,6 +531,9 @@ private:
 		TSharedPtr<FSlateBrush> Brush;
 		UTexture2D* Texture = nullptr;
 
+		/** Absolute local path to the saved result image on disk */
+		FString ImagePath;
+
 		/** Non-empty when this result is a video (local disk path for playback) */
 		FString VideoPath;
 	};
@@ -553,8 +557,17 @@ private:
 	/** Gallery scroll box (rebuilt when history changes) */
 	TSharedPtr<SScrollBox> ResultGalleryBox;
 
+	/** True when gallery should handle arrow key navigation (set on click, cleared on other focus) */
+	bool bGalleryHasAttention = false;
+
 	/** Rebuild the clickable thumbnail gallery from ImageHistory */
 	void RebuildResultGallery();
+
+	/** Horizontal gallery strip in the graph editor tab (for drag-to-graph) */
+	TSharedPtr<SScrollBox> GraphTabGalleryBox;
+
+	/** Rebuild the graph tab's horizontal gallery strip */
+	void RebuildGraphTabGallery();
 
 	/** Populate the preview + gallery with segmentation results (mask + per-actor isolations) */
 	void PopulateSegmentationGallery();

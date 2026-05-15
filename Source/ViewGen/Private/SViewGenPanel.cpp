@@ -2531,6 +2531,27 @@ TSharedRef<SWidget> SViewGenPanel::BuildGraphEditorTab()
 			]
 		]
 
+		// Horizontal result gallery strip (for drag-to-graph)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2.0f, 2.0f, 2.0f, 0.0f)
+		[
+			SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+			.BorderBackgroundColor(FLinearColor(0.06f, 0.06f, 0.07f))
+			.Padding(2.0f)
+			.Visibility_Lambda([this]()
+			{
+				return ImageHistory.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+			})
+			[
+				SAssignNew(GraphTabGalleryBox, SScrollBox)
+				.Orientation(Orient_Horizontal)
+				.ConsumeMouseWheel(EConsumeMouseWheel::Always)
+				.ScrollBarThickness(FVector2D(4.0f, 4.0f))
+			]
+		]
+
 		// Graph editor toolbar — pinned to the bottom
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -5722,6 +5743,10 @@ void SViewGenPanel::OnGenerationComplete(bool bSuccess, UTexture2D* ResultTextur
 		FHistoryEntry Entry;
 		Entry.Brush = NewBrush;
 		Entry.Texture = ResultTexture;
+		if (HttpClient.IsValid())
+		{
+			Entry.ImagePath = HttpClient->GetLastSavedImagePath();
+		}
 		ImageHistory.Add(MoveTemp(Entry));
 		HistoryIndex = ImageHistory.Num() - 1;
 
@@ -5734,8 +5759,9 @@ void SViewGenPanel::OnGenerationComplete(bool bSuccess, UTexture2D* ResultTextur
 			PreviewImage->SetImage(PreviewBrush.Get());
 		}
 
-		// Rebuild the thumbnail gallery
+		// Rebuild the thumbnail galleries (Generate tab + Graph tab)
 		RebuildResultGallery();
+		RebuildGraphTabGallery();
 
 		// Segmentation disabled - pending RMBG integration
 		// TODO: Re-enable with ComfyUI-RMBG SAM2Segment node
@@ -6365,21 +6391,38 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 		// --- INT ---
 		else if (WidgetType == TEXT("INT"))
 		{
-			int32 CurrentVal = FCString::Atoi(**ValuePtr);
+			int64 CurrentVal = FCString::Atoi64(**ValuePtr);
+
+			// Clamp min/max to int64 range safely (ComfyUI seeds use huge maxes like 2^64-1)
+			int64 MinVal = -999999;
+			int64 MaxVal = 999999;
+			int64 DeltaVal = 1;
+			if (InputDef)
+			{
+				// Clamp to int64 representable range to avoid overflow
+				MinVal = (InputDef->MinValue < (double)INT64_MIN) ? INT64_MIN
+					: (InputDef->MinValue > (double)INT64_MAX) ? INT64_MAX
+					: static_cast<int64>(InputDef->MinValue);
+				MaxVal = (InputDef->MaxValue > (double)INT64_MAX) ? INT64_MAX
+					: (InputDef->MaxValue < (double)INT64_MIN) ? INT64_MIN
+					: static_cast<int64>(InputDef->MaxValue);
+				DeltaVal = static_cast<int64>(FMath::Max(1.0, InputDef->Step));
+			}
+
 			NodeDetailsPanel->AddSlot()
 			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
 			[
-				SNew(SSpinBox<int32>)
+				SNew(SSpinBox<int64>)
 				.Value(CurrentVal)
-				.MinValue(InputDef ? static_cast<int32>(InputDef->MinValue) : -999999)
-				.MaxValue(InputDef ? static_cast<int32>(InputDef->MaxValue) : 999999)
-				.Delta(InputDef ? static_cast<int32>(FMath::Max(1.0f, InputDef->Step)) : 1)
+				.MinValue(MinVal)
+				.MaxValue(MaxVal)
+				.Delta(DeltaVal)
 				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-				.OnValueCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](int32 NewVal, ETextCommit::Type)
+				.OnValueCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](int64 NewVal, ETextCommit::Type)
 				{
 					if (GraphEditor.IsValid())
 					{
-						GraphEditor->CommitWidgetValueSilent(CapturedNodeId, CapturedWidgetName, FString::FromInt(NewVal));
+						GraphEditor->CommitWidgetValueSilent(CapturedNodeId, CapturedWidgetName, FString::Printf(TEXT("%lld"), NewVal));
 					}
 				})
 			];
@@ -10371,6 +10414,44 @@ void SViewGenPanel::ShowHistoryEntry(int32 Index)
 	SetVideoSourceFromTexture(Entry.Texture);
 }
 
+FReply SViewGenPanel::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	// Gallery attention: set by clicking a thumbnail, cleared when focus moves elsewhere
+	bool bGalleryFocused = ResultGalleryBox.IsValid() && ResultGalleryBox->HasFocusedDescendants();
+	if (bGalleryFocused)
+	{
+		bGalleryHasAttention = true;
+	}
+
+	if (bGalleryHasAttention && ImageHistory.Num() > 0)
+	{
+		const FKey Key = InKeyEvent.GetKey();
+
+		if (Key == EKeys::Up)
+		{
+			// Gallery is reverse-chronological (newest at top), so Up = next index
+			ShowNextResult();
+			return FReply::Handled();
+		}
+		if (Key == EKeys::Down)
+		{
+			// Down = previous index
+			ShowPreviousResult();
+			return FReply::Handled();
+		}
+		if (Key == EKeys::Enter)
+		{
+			// Consume Enter so it doesn't activate Clear or other buttons
+			return FReply::Handled();
+		}
+
+		// Any other key press releases gallery attention
+		bGalleryHasAttention = false;
+	}
+
+	return SCompoundWidget::OnPreviewKeyDown(MyGeometry, InKeyEvent);
+}
+
 // ============================================================================
 // Result Gallery (thumbnail strip)
 // ============================================================================
@@ -10445,6 +10526,7 @@ TSharedRef<SWidget> SViewGenPanel::BuildResultGalleryPanel()
 			[
 				SAssignNew(ResultGalleryBox, SScrollBox)
 				.Orientation(Orient_Vertical)
+				.ConsumeMouseWheel(EConsumeMouseWheel::Always)
 			]
 
 			// ---- Segmentation Section (HIDDEN - pending RMBG integration) ----
@@ -10529,6 +10611,62 @@ TSharedRef<SWidget> SViewGenPanel::BuildResultGalleryPanel()
 		];
 }
 
+// ============================================================================
+// Draggable Thumbnail Widget
+// ============================================================================
+// Lightweight widget supporting both click and drag-to-graph on result thumbnails.
+// SButton does not expose OnDragDetected in SLATE_ARGS, so we need this custom class.
+
+namespace
+{
+	DECLARE_DELEGATE_RetVal(FReply, FDraggableThumbClicked);
+	DECLARE_DELEGATE_RetVal_TwoParams(FReply, FDraggableThumbDragDetected, const FGeometry&, const FPointerEvent&);
+
+	class SDraggableThumbnail : public SCompoundWidget
+	{
+	public:
+		SLATE_BEGIN_ARGS(SDraggableThumbnail) {}
+			SLATE_DEFAULT_SLOT(FArguments, Content)
+		SLATE_END_ARGS()
+
+		FDraggableThumbClicked OnClickedDelegate;
+		FDraggableThumbDragDetected OnDragDetectedDelegate;
+
+		void Construct(const FArguments& InArgs)
+		{
+			SetCursor(EMouseCursor::GrabHand);
+			ChildSlot[ InArgs._Content.Widget ];
+		}
+
+		virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+		{
+			if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+			{
+				return FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
+			}
+			return FReply::Unhandled();
+		}
+
+		virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+		{
+			if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && OnClickedDelegate.IsBound())
+			{
+				return OnClickedDelegate.Execute();
+			}
+			return FReply::Handled();
+		}
+
+		virtual FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+		{
+			if (OnDragDetectedDelegate.IsBound())
+			{
+				return OnDragDetectedDelegate.Execute(MyGeometry, MouseEvent);
+			}
+			return FReply::Unhandled();
+		}
+	};
+} // anonymous namespace
+
 void SViewGenPanel::RebuildResultGallery()
 {
 	if (!ResultGalleryBox.IsValid()) return;
@@ -10545,60 +10683,58 @@ void SViewGenPanel::RebuildResultGallery()
 		ResultGalleryBox->AddSlot()
 		.Padding(2.0f)
 		[
-			SNew(SBox)
-			.HeightOverride(80.0f)
+			// Outer border — bright yellow frame when selected, dark when not
+			SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+			.BorderBackgroundColor_Lambda([this, EntryIndex]()
+			{
+				return HistoryIndex == EntryIndex
+					? FLinearColor(0.9f, 0.7f, 0.1f, 1.0f)   // Selected: bright yellow frame
+					: FLinearColor(0.02f, 0.02f, 0.02f, 1.0f); // Unselected: near-black (invisible)
+			})
+			.Padding(2.0f) // Border thickness
 			[
-				SNew(SButton)
-				.ButtonStyle(FAppStyle::Get(), "NoBorder")
-				.Cursor(EMouseCursor::Hand)
-				.OnClicked_Lambda([this, EntryIndex]() -> FReply
-				{
-					ShowHistoryEntry(EntryIndex);
-					return FReply::Handled();
-				})
-				.ToolTipText(FText::FromString(FString::Printf(TEXT("Result %d"), EntryIndex + 1)))
+				SNew(SBox)
+				.HeightOverride(76.0f) // 80 - 2*2 for border padding
 				[
-					SNew(SOverlay)
-
-					// Thumbnail image
-					+ SOverlay::Slot()
+					SNew(SButton)
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
+					.Cursor(EMouseCursor::Hand)
+					.OnClicked_Lambda([this, EntryIndex]() -> FReply
+					{
+						ShowHistoryEntry(EntryIndex);
+						bGalleryHasAttention = true;
+						return FReply::Handled();
+					})
+					.ToolTipText(FText::FromString(FString::Printf(TEXT("Result %d"), EntryIndex + 1)))
 					[
-						SNew(SScaleBox)
-						.Stretch(EStretch::ScaleToFit)
+						SNew(SOverlay)
+
+						// Thumbnail image
+						+ SOverlay::Slot()
 						[
-							SNew(SImage)
-							.Image(Entry.Brush.Get())
+							SNew(SScaleBox)
+							.Stretch(EStretch::ScaleToFit)
+							[
+								SNew(SImage)
+								.Image(Entry.Brush.Get())
+							]
 						]
-					]
 
-					// Dim overlay for unselected thumbnails
-					+ SOverlay::Slot()
-					[
-						SNew(SBorder)
-						.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-						.BorderBackgroundColor_Lambda([this, EntryIndex]()
-						{
-							return HistoryIndex == EntryIndex
-								? FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)   // Selected: fully transparent (no dim)
-								: FLinearColor(0.0f, 0.0f, 0.0f, 0.45f); // Unselected: dark overlay
-						})
-						.Padding(0.0f)
-						.Visibility(EVisibility::HitTestInvisible)
-					]
-
-					// Selection highlight border
-					+ SOverlay::Slot()
-					[
-						SNew(SBorder)
-						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-						.BorderBackgroundColor_Lambda([this, EntryIndex]()
-						{
-							return HistoryIndex == EntryIndex
-								? FLinearColor(0.9f, 0.7f, 0.1f, 0.8f)
-								: FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
-						})
-						.Padding(0.0f)
-					]
+						// Dim overlay for unselected thumbnails
+						+ SOverlay::Slot()
+						[
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+							.BorderBackgroundColor_Lambda([this, EntryIndex]()
+							{
+								return HistoryIndex == EntryIndex
+									? FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)   // Selected: fully clear
+									: FLinearColor(0.0f, 0.0f, 0.0f, 0.55f); // Unselected: strong dim
+							})
+							.Padding(0.0f)
+							.Visibility(EVisibility::HitTestInvisible)
+						]
 
 					// Close button (top-right corner)
 					+ SOverlay::Slot()
@@ -10674,9 +10810,95 @@ void SViewGenPanel::RebuildResultGallery()
 							.ColorAndOpacity(FSlateColor(FLinearColor::White))
 						]
 					]
+					]
 				]
 			]
 		];
+	}
+}
+
+void SViewGenPanel::RebuildGraphTabGallery()
+{
+	if (!GraphTabGalleryBox.IsValid()) return;
+
+	GraphTabGalleryBox->ClearChildren();
+
+	// Build horizontal thumbnails in reverse chronological order (newest on left)
+	for (int32 i = ImageHistory.Num() - 1; i >= 0; --i)
+	{
+		const int32 EntryIndex = i;
+		const FHistoryEntry& Entry = ImageHistory[i];
+		if (!Entry.Brush.IsValid()) continue;
+
+		TSharedPtr<SDraggableThumbnail> DragThumb;
+
+		GraphTabGalleryBox->AddSlot()
+		.Padding(2.0f)
+		[
+			// Outer border — yellow when selected, dark when not
+			SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+			.BorderBackgroundColor_Lambda([this, EntryIndex]()
+			{
+				return HistoryIndex == EntryIndex
+					? FLinearColor(0.9f, 0.7f, 0.1f, 1.0f)
+					: FLinearColor(0.02f, 0.02f, 0.02f, 1.0f);
+			})
+			.Padding(2.0f)
+			[
+				SNew(SBox)
+				.WidthOverride(64.0f)
+				.HeightOverride(64.0f)
+				[
+					SAssignNew(DragThumb, SDraggableThumbnail)
+					[
+						SNew(SOverlay)
+
+						+ SOverlay::Slot()
+						[
+							SNew(SScaleBox)
+							.Stretch(EStretch::ScaleToFit)
+							[
+								SNew(SImage)
+								.Image(Entry.Brush.Get())
+							]
+						]
+
+						// Dim overlay for unselected
+						+ SOverlay::Slot()
+						[
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+							.BorderBackgroundColor_Lambda([this, EntryIndex]()
+							{
+								return HistoryIndex == EntryIndex
+									? FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)
+									: FLinearColor(0.0f, 0.0f, 0.0f, 0.45f);
+							})
+							.Padding(0.0f)
+							.Visibility(EVisibility::HitTestInvisible)
+						]
+					]
+				]
+			]
+		];
+
+		// Bind click and drag delegates after construction (SDraggableThumbnail is not SButton)
+		DragThumb->SetToolTipText(FText::FromString(
+			FString::Printf(TEXT("Drag result %d onto graph to create Load node"), EntryIndex + 1)));
+		DragThumb->OnClickedDelegate.BindLambda([this, EntryIndex]() -> FReply
+		{
+			ShowHistoryEntry(EntryIndex);
+			return FReply::Handled();
+		});
+		DragThumb->OnDragDetectedDelegate.BindLambda([this, EntryIndex](const FGeometry& Geom, const FPointerEvent& PointerEvent) -> FReply
+		{
+			if (!ImageHistory.IsValidIndex(EntryIndex)) return FReply::Unhandled();
+			const FHistoryEntry& E = ImageHistory[EntryIndex];
+			TSharedRef<FViewGenGalleryDragOp> Op = FViewGenGalleryDragOp::Create(
+				EntryIndex, E.Texture, E.ImagePath, E.VideoPath);
+			return FReply::Handled().BeginDragDrop(Op);
+		});
 	}
 }
 
