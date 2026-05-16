@@ -3426,6 +3426,21 @@ void FGenAIHttpClient::FetchImageThumbnail(const FString& ImageFilename, TFuncti
 				return;
 			}
 
+			// Cache the raw image bytes to disk for offline thumbnail persistence
+			{
+				const TArray<uint8>& ImageBytes = Resp->GetContent();
+				if (ImageBytes.Num() > 0)
+				{
+					FString SafeName = ImageFilename;
+					SafeName.ReplaceInline(TEXT("/"), TEXT("_"));
+					SafeName.ReplaceInline(TEXT("\\"), TEXT("_"));
+					SafeName.ReplaceInline(TEXT(":"), TEXT("_"));
+					FString CachePath = FPaths::ProjectSavedDir() / TEXT("ViewGen") / TEXT("ThumbCache") / (SafeName + TEXT(".png"));
+					IFileManager::Get().MakeDirectory(*FPaths::GetPath(CachePath), true);
+					FFileHelper::SaveArrayToFile(ImageBytes, *CachePath);
+				}
+			}
+
 			UTexture2D* Tex = DecodeImageToTexture(Resp->GetContent());
 			// Tex is already rooted by DecodeImageToTexture
 			if (OnThumbnailReady) OnThumbnailReady(Tex);

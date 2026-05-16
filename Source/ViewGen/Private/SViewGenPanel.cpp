@@ -464,6 +464,23 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 	// Fetch available models from ComfyUI (async — populates dropdowns when done)
 	FetchAndPopulateModels();
 
+	// Restore result image history from previous session
+	RestoreResultHistory();
+
+	// Restore last viewport and depth captures from disk
+	{
+		UTexture2D* LastViewport = LoadCaptureFromDisk(TEXT("LastViewport.png"));
+		if (LastViewport)
+		{
+			UpdateThumbnailBrush(ViewportThumbnailBrush, LastViewport, ViewportThumbnailImage);
+		}
+		UTexture2D* LastDepth = LoadCaptureFromDisk(TEXT("LastDepth.png"));
+		if (LastDepth)
+		{
+			UpdateThumbnailBrush(DepthThumbnailBrush, LastDepth, DepthThumbnailImage);
+		}
+	}
+
 	// Register PostGC callback to refresh stale TObjectPtr handles in FSlateBrush objects.
 	// GC compaction can run mid-frame (e.g. during SavePackage) between Slate Tick and Paint,
 	// invalidating packed indices in heap-allocated brushes that aren't tracked by UPROPERTY.
@@ -472,6 +489,9 @@ void SViewGenPanel::Construct(const FArguments& InArgs)
 
 SViewGenPanel::~SViewGenPanel()
 {
+	// Persist result history before teardown
+	SaveResultHistory();
+
 	// Unregister PostGC callback
 	if (PostGCDelegateHandle.IsValid())
 	{
@@ -3011,6 +3031,7 @@ FReply SViewGenPanel::OnCaptureViewportClicked()
 	{
 		UpdateThumbnailBrush(ViewportThumbnailBrush,
 			ViewportCapture->GetCapturedTexture(), ViewportThumbnailImage);
+		SaveCaptureToDisk(ViewportCapture->GetCapturedTexture(), TEXT("LastViewport.png"));
 	}
 
 	// Capture depth pass at matching native viewport resolution
@@ -3021,6 +3042,7 @@ FReply SViewGenPanel::OnCaptureViewportClicked()
 	{
 		UpdateThumbnailBrush(DepthThumbnailBrush,
 			DepthRenderer->GetDepthTexture(), DepthThumbnailImage);
+		SaveCaptureToDisk(DepthRenderer->GetDepthTexture(), TEXT("LastDepth.png"));
 	}
 
 	if (bColorSuccess)
@@ -7203,9 +7225,78 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 	}
 }
 
+// ----------- Thumbnail disk cache helpers -----------
+
+static FString GetThumbnailCacheDir()
+{
+	return FPaths::ProjectSavedDir() / TEXT("ViewGen") / TEXT("ThumbCache");
+}
+
+static FString GetThumbnailCachePath(const FString& ImageFilename)
+{
+	// Use a sanitised filename as the cache key
+	FString SafeName = ImageFilename;
+	SafeName.ReplaceInline(TEXT("/"), TEXT("_"));
+	SafeName.ReplaceInline(TEXT("\\"), TEXT("_"));
+	SafeName.ReplaceInline(TEXT(":"), TEXT("_"));
+	return GetThumbnailCacheDir() / (SafeName + TEXT(".png"));
+}
+
+static void SaveThumbnailToCache(const FString& ImageFilename, const TArray<uint8>& ImageBytes)
+{
+	if (ImageBytes.Num() == 0) return;
+	const FString CachePath = GetThumbnailCachePath(ImageFilename);
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(CachePath), true);
+	FFileHelper::SaveArrayToFile(ImageBytes, *CachePath);
+}
+
+static UTexture2D* LoadThumbnailFromCache(const FString& ImageFilename)
+{
+	const FString CachePath = GetThumbnailCachePath(ImageFilename);
+	TArray<uint8> FileData;
+	if (!FFileHelper::LoadFileToArray(FileData, *CachePath))
+	{
+		return nullptr;
+	}
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+
+	// Detect format from the raw bytes
+	EImageFormat Fmt = IWM.DetectImageFormat(FileData.GetData(), FileData.Num());
+	if (Fmt == EImageFormat::Invalid) return nullptr;
+
+	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(Fmt);
+	if (!Wrapper.IsValid() || !Wrapper->SetCompressed(FileData.GetData(), FileData.Num()))
+	{
+		return nullptr;
+	}
+
+	TArray<uint8> RawPixels;
+	if (!Wrapper->GetRaw(ERGBFormat::BGRA, 8, RawPixels))
+	{
+		return nullptr;
+	}
+
+	int32 W = Wrapper->GetWidth();
+	int32 H = Wrapper->GetHeight();
+	if (W <= 0 || H <= 0) return nullptr;
+
+	UTexture2D* Tex = UTexture2D::CreateTransient(W, H, PF_B8G8R8A8);
+	if (!Tex) return nullptr;
+
+	void* MipData = Tex->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(MipData, RawPixels.GetData(), RawPixels.Num());
+	Tex->GetPlatformData()->Mips[0].BulkData.Unlock();
+	Tex->UpdateResource();
+	Tex->AddToRoot();
+	return Tex;
+}
+
+// ----------------------------------------------------------------
+
 void SViewGenPanel::RefreshLoadImageThumbnails()
 {
-	if (!GraphEditor.IsValid() || !HttpClient.IsValid()) return;
+	if (!GraphEditor.IsValid()) return;
 
 	const TArray<FGraphNode>& GraphNodes = GraphEditor->GetNodes();
 	for (const FGraphNode& Node : GraphNodes)
@@ -7225,7 +7316,36 @@ void SViewGenPanel::RefreshLoadImageThumbnails()
 		FString NodeId = Node.Id;
 		FString ImageFilename = *ImageVal;
 
-		HttpClient->FetchImageThumbnail(ImageFilename, [this, NodeId](UTexture2D* Tex)
+		// 1) Try loading from local thumbnail cache (works even without ComfyUI)
+		UTexture2D* CachedTex = LoadThumbnailFromCache(ImageFilename);
+		if (!CachedTex && FPaths::FileExists(ImageFilename))
+		{
+			// The widget value is a full local path (e.g., from drag-drop) — load directly
+			CachedTex = LoadThumbnailFromCache(FPaths::GetCleanFilename(ImageFilename));
+			if (!CachedTex)
+			{
+				// No cache entry; load from the original file and cache it
+				TArray<uint8> FileData;
+				if (FFileHelper::LoadFileToArray(FileData, *ImageFilename))
+				{
+					SaveThumbnailToCache(ImageFilename, FileData);
+					CachedTex = LoadThumbnailFromCache(ImageFilename);
+				}
+			}
+		}
+		if (CachedTex)
+		{
+			if (GraphEditor.IsValid())
+			{
+				GraphEditor->SetNodeThumbnail(NodeId, CachedTex);
+			}
+			continue;
+		}
+
+		// 2) Fall back to fetching from ComfyUI server
+		if (!HttpClient.IsValid()) continue;
+
+		HttpClient->FetchImageThumbnail(ImageFilename, [this, NodeId, ImageFilename](UTexture2D* Tex)
 		{
 			if (Tex && GraphEditor.IsValid())
 			{
@@ -8275,6 +8395,7 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 				ViewportCapture->CaptureActiveViewport();
 				UpdateThumbnailBrush(ViewportThumbnailBrush,
 					ViewportCapture->GetCapturedTexture(), ViewportThumbnailImage);
+				SaveCaptureToDisk(ViewportCapture->GetCapturedTexture(), TEXT("LastViewport.png"));
 			}
 			FString ViewportBase64 = ViewportCapture->GetBase64PNG();
 			FString ServerFilename;
@@ -8547,6 +8668,7 @@ FReply SViewGenPanel::OnGenerateFromGraphClicked()
 			// Update the thumbnail with the fresh capture
 			UpdateThumbnailBrush(ViewportThumbnailBrush,
 				ViewportCapture->GetCapturedTexture(), ViewportThumbnailImage);
+			SaveCaptureToDisk(ViewportCapture->GetCapturedTexture(), TEXT("LastViewport.png"));
 		}
 		else
 		{
@@ -13610,6 +13732,69 @@ AActor* SViewGenPanel::PlaceAssetInLevel(const FString& AssetContentPath)
 }
 
 // ============================================================================
+// Viewport/Depth Capture Persistence
+// ============================================================================
+
+static void SaveCaptureToDisk(UTexture2D* Texture, const TCHAR* Filename)
+{
+	if (!Texture || !::IsValid(Texture)) return;
+
+	int32 W = Texture->GetSizeX();
+	int32 H = Texture->GetSizeY();
+	if (W <= 0 || H <= 0) return;
+
+	FTexturePlatformData* PD = Texture->GetPlatformData();
+	if (!PD || PD->Mips.Num() == 0) return;
+
+	TArray<FColor> Pixels;
+	Pixels.SetNum(W * H);
+	const void* Data = PD->Mips[0].BulkData.LockReadOnly();
+	FMemory::Memcpy(Pixels.GetData(), Data, W * H * sizeof(FColor));
+	PD->Mips[0].BulkData.Unlock();
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(EImageFormat::PNG);
+	if (!Wrapper.IsValid()) return;
+
+	if (!Wrapper->SetRaw(Pixels.GetData(), W * H * 4, W, H, ERGBFormat::BGRA, 8)) return;
+
+	TArray<uint8> CompressedData;
+	if (!Wrapper->GetCompressed(CompressedData, 90)) return;
+
+	FString Path = FPaths::ProjectSavedDir() / TEXT("ViewGen") / Filename;
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	FFileHelper::SaveArrayToFile(CompressedData, *Path);
+}
+
+static UTexture2D* LoadCaptureFromDisk(const TCHAR* Filename)
+{
+	FString Path = FPaths::ProjectSavedDir() / TEXT("ViewGen") / Filename;
+	TArray<uint8> FileData;
+	if (!FFileHelper::LoadFileToArray(FileData, *Path)) return nullptr;
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(EImageFormat::PNG);
+	if (!Wrapper.IsValid() || !Wrapper->SetCompressed(FileData.GetData(), FileData.Num())) return nullptr;
+
+	TArray<uint8> RawPixels;
+	if (!Wrapper->GetRaw(ERGBFormat::BGRA, 8, RawPixels)) return nullptr;
+
+	int32 W = Wrapper->GetWidth();
+	int32 H = Wrapper->GetHeight();
+	if (W <= 0 || H <= 0) return nullptr;
+
+	UTexture2D* Tex = UTexture2D::CreateTransient(W, H, PF_B8G8R8A8);
+	if (!Tex) return nullptr;
+
+	void* MipData = Tex->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(MipData, RawPixels.GetData(), RawPixels.Num());
+	Tex->GetPlatformData()->Mips[0].BulkData.Unlock();
+	Tex->UpdateResource();
+	Tex->AddToRoot();
+	return Tex;
+}
+
+// ============================================================================
 // Graph Auto-Persistence
 // ============================================================================
 
@@ -13637,6 +13822,9 @@ void SViewGenPanel::AutoSaveGraph()
 	IFileManager::Get().MakeDirectory(*Dir, true);
 
 	FFileHelper::SaveStringToFile(OutputString, *FilePath);
+
+	// Also persist result history alongside the graph
+	SaveResultHistory();
 }
 
 bool SViewGenPanel::RestoreLastGraph()
@@ -13667,6 +13855,148 @@ bool SViewGenPanel::RestoreLastGraph()
 	}
 
 	return false;
+}
+
+// ============================================================================
+// Result History Persistence
+// ============================================================================
+
+FString SViewGenPanel::GetResultHistoryPath()
+{
+	return FPaths::ProjectSavedDir() / TEXT("ViewGen") / TEXT("ResultHistory.json");
+}
+
+void SViewGenPanel::SaveResultHistory()
+{
+	TArray<TSharedPtr<FJsonValue>> HistArray;
+
+	for (const FHistoryEntry& Entry : ImageHistory)
+	{
+		// Only persist entries that have a saved file on disk
+		if (Entry.ImagePath.IsEmpty() && Entry.VideoPath.IsEmpty()) continue;
+
+		TSharedPtr<FJsonObject> EntryObj = MakeShareable(new FJsonObject);
+		if (!Entry.ImagePath.IsEmpty())
+		{
+			EntryObj->SetStringField(TEXT("image_path"), Entry.ImagePath);
+		}
+		if (!Entry.VideoPath.IsEmpty())
+		{
+			EntryObj->SetStringField(TEXT("video_path"), Entry.VideoPath);
+		}
+		HistArray.Add(MakeShareable(new FJsonValueObject(EntryObj)));
+	}
+
+	TSharedPtr<FJsonObject> Root = MakeShareable(new FJsonObject);
+	Root->SetNumberField(TEXT("version"), 1);
+	Root->SetNumberField(TEXT("history_index"), HistoryIndex);
+	Root->SetArrayField(TEXT("entries"), HistArray);
+
+	FString Output;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
+
+	const FString FilePath = GetResultHistoryPath();
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
+	FFileHelper::SaveStringToFile(Output, *FilePath);
+}
+
+void SViewGenPanel::RestoreResultHistory()
+{
+	const FString FilePath = GetResultHistoryPath();
+	FString JsonString;
+	if (!FFileHelper::LoadFileToString(JsonString, *FilePath)) return;
+
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid()) return;
+
+	const TArray<TSharedPtr<FJsonValue>>* Entries;
+	if (!Root->TryGetArrayField(TEXT("entries"), Entries)) return;
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+
+	for (const TSharedPtr<FJsonValue>& Val : *Entries)
+	{
+		const TSharedPtr<FJsonObject>* EntryObj;
+		if (!Val->TryGetObject(EntryObj)) continue;
+
+		FString ImgPath, VidPath;
+		(*EntryObj)->TryGetStringField(TEXT("image_path"), ImgPath);
+		(*EntryObj)->TryGetStringField(TEXT("video_path"), VidPath);
+
+		// Determine which file to load the thumbnail from
+		FString ThumbSourcePath = ImgPath;
+		if (ThumbSourcePath.IsEmpty()) ThumbSourcePath = VidPath; // Videos may have a poster frame later
+		if (ThumbSourcePath.IsEmpty()) continue;
+
+		// Check the file still exists on disk
+		if (!FPaths::FileExists(ThumbSourcePath)) continue;
+
+		// Load the image from disk
+		TArray<uint8> FileData;
+		if (!FFileHelper::LoadFileToArray(FileData, *ThumbSourcePath)) continue;
+
+		EImageFormat Fmt = IWM.DetectImageFormat(FileData.GetData(), FileData.Num());
+		if (Fmt == EImageFormat::Invalid) continue;
+
+		TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(Fmt);
+		if (!Wrapper.IsValid() || !Wrapper->SetCompressed(FileData.GetData(), FileData.Num())) continue;
+
+		TArray<uint8> RawPixels;
+		if (!Wrapper->GetRaw(ERGBFormat::BGRA, 8, RawPixels)) continue;
+
+		int32 W = Wrapper->GetWidth();
+		int32 H = Wrapper->GetHeight();
+		if (W <= 0 || H <= 0) continue;
+
+		UTexture2D* Tex = UTexture2D::CreateTransient(W, H, PF_B8G8R8A8);
+		if (!Tex) continue;
+
+		void* MipData = Tex->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+		FMemory::Memcpy(MipData, RawPixels.GetData(), RawPixels.Num());
+		Tex->GetPlatformData()->Mips[0].BulkData.Unlock();
+		Tex->UpdateResource();
+		Tex->AddToRoot();
+
+		FHistoryEntry Entry;
+		Entry.Texture = Tex;
+		Entry.ImagePath = ImgPath;
+		Entry.VideoPath = VidPath;
+
+		TSharedPtr<FSlateBrush> NewBrush = MakeShareable(new FSlateBrush());
+		NewBrush->SetResourceObject(Tex);
+		NewBrush->ImageSize = FVector2D(W, H);
+		NewBrush->DrawAs = ESlateBrushDrawType::Image;
+		Entry.Brush = NewBrush;
+
+		ImageHistory.Add(MoveTemp(Entry));
+	}
+
+	// Restore the viewed index
+	int32 SavedIndex = static_cast<int32>(Root->GetNumberField(TEXT("history_index")));
+	if (ImageHistory.Num() > 0)
+	{
+		HistoryIndex = FMath::Clamp(SavedIndex, 0, ImageHistory.Num() - 1);
+
+		// Update the preview to show the restored entry
+		const FHistoryEntry& Current = ImageHistory[HistoryIndex];
+		if (Current.Texture && ::IsValid(Current.Texture))
+		{
+			PreviewBrush->SetResourceObject(Current.Texture);
+			PreviewBrush->ImageSize = FVector2D(Current.Texture->GetSizeX(), Current.Texture->GetSizeY());
+			PreviewBrush->DrawAs = ESlateBrushDrawType::Image;
+			if (PreviewImage.IsValid())
+			{
+				PreviewImage->SetImage(PreviewBrush.Get());
+			}
+		}
+	}
+
+	RebuildResultGallery();
+	RebuildGraphTabGallery();
+
+	UE_LOG(LogTemp, Log, TEXT("ViewGen: Restored %d result history entries from disk"), ImageHistory.Num());
 }
 
 #undef LOCTEXT_NAMESPACE

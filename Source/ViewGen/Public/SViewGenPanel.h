@@ -730,6 +730,15 @@ private:
 	/** Get the file path for the auto-save graph file */
 	static FString GetAutoSaveGraphPath();
 
+	/** Save the result image history metadata to disk */
+	void SaveResultHistory();
+
+	/** Restore result image history from disk, reloading textures from saved files */
+	void RestoreResultHistory();
+
+	/** Get the file path for the result history JSON */
+	static FString GetResultHistoryPath();
+
 	/** Debounce timer for auto-save (avoids saving on every tiny change) */
 	FTimerHandle AutoSaveTimer;
 
