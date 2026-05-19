@@ -96,6 +96,21 @@ void FGenAIHttpClient::FetchAvailableModels()
 			Resp->GetContentAsString().Len(), Root->Values.Num());
 		FComfyNodeDatabase::Get().ParseObjectInfo(Root);
 
+		// Inject node definitions for frontend-only API nodes (e.g. Anthropic Claude)
+		// by scanning workflow template JSON files for unknown node types.
+		{
+			FString WorkflowDir = FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("ViewGen"), TEXT("Workflows"));
+			if (!FPaths::DirectoryExists(WorkflowDir))
+			{
+				// Fallback for installed builds where plugin is in engine plugins
+				WorkflowDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("ViewGen"), TEXT("Workflows"));
+			}
+			if (FPaths::DirectoryExists(WorkflowDir))
+			{
+				FComfyNodeDatabase::Get().InjectNodesFromWorkflows(WorkflowDir);
+			}
+		}
+
 		// Helper: extract string array from node_info -> input -> required -> field_name
 		// Handles both old format: [["option1","option2",...], {...}]
 		//           and new format: ["COMBO", {"options": ["option1","option2",...]}]

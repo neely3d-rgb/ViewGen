@@ -4,6 +4,8 @@
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Misc/FileHelper.h"
+#include "HAL/FileManager.h"
 
 FComfyNodeDatabase& FComfyNodeDatabase::Get()
 {
@@ -63,13 +65,42 @@ void FComfyNodeDatabase::ParseObjectInfo(TSharedPtr<FJsonObject> Root)
 
 	for (const auto& Pair : Root->Values)
 	{
+		// Diagnostic: detect Anthropic/Claude nodes even if parsing fails
+		bool bIsAnthropicNode = Pair.Key.Contains(TEXT("Anthropic")) || Pair.Key.Contains(TEXT("Claude")) || Pair.Key.Contains(TEXT("anthropic")) || Pair.Key.Contains(TEXT("claude"));
+		if (bIsAnthropicNode)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen: [API Diag] Found key '%s' in /object_info (type=%d)"),
+				*Pair.Key, (int32)Pair.Value->Type);
+		}
+
 		const TSharedPtr<FJsonObject>* NodeInfoPtr;
 		if (!Pair.Value->TryGetObject(NodeInfoPtr) || !(*NodeInfoPtr).IsValid())
 		{
+			if (bIsAnthropicNode)
+			{
+				UE_LOG(LogTemp, Error, TEXT("ViewGen: [API Diag] Key '%s' FAILED TryGetObject — skipped! JSON type=%d"),
+					*Pair.Key, (int32)Pair.Value->Type);
+			}
 			continue;
 		}
 
 		FComfyNodeDef Def = ParseSingleNode(Pair.Key, *NodeInfoPtr);
+
+		if (bIsAnthropicNode)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ViewGen: [API Diag] Parsed '%s' → DisplayName='%s', Category='%s', Inputs=%d, Outputs=%d"),
+				*Pair.Key, *Def.DisplayName, *Def.Category, Def.Inputs.Num(), Def.Outputs.Num());
+			for (const auto& Input : Def.Inputs)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen: [API Diag]   Input '%s' type='%s' combo=%d default='%s'"),
+					*Input.Name, *Input.Type, Input.ComboOptions.Num(), *Input.DefaultString);
+			}
+			for (const auto& Output : Def.Outputs)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ViewGen: [API Diag]   Output '%s' type='%s'"),
+					*Output.Name, *Output.Type);
+			}
+		}
 
 		// Diagnostic: log all inputs for nodes containing "ByteDance" or "Seedance"
 		if (Pair.Key.Contains(TEXT("ByteDance")) || Pair.Key.Contains(TEXT("Seedance")) ||
@@ -498,4 +529,234 @@ TArray<const FComfyNodeDef*> FComfyNodeDatabase::SearchNodes(const FString& Quer
 	});
 
 	return Result;
+}
+
+// ============================================================================
+// Workflow-Based Node Discovery
+// ============================================================================
+
+void FComfyNodeDatabase::InjectNodesFromWorkflows(const FString& WorkflowDir)
+{
+	// Find all .json files in the workflow directory
+	TArray<FString> JsonFiles;
+	IFileManager::Get().FindFiles(JsonFiles, *WorkflowDir, TEXT("*.json"));
+
+	int32 InjectedCount = 0;
+
+	for (const FString& FileName : JsonFiles)
+	{
+		FString FullPath = WorkflowDir / FileName;
+		FString JsonStr;
+		if (!FFileHelper::LoadFileToString(JsonStr, *FullPath))
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Root;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
+		if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+		{
+			continue;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* NodesArray;
+		if (!Root->TryGetArrayField(TEXT("nodes"), NodesArray))
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& NodeVal : *NodesArray)
+		{
+			const TSharedPtr<FJsonObject>* NodeObj;
+			if (!NodeVal->TryGetObject(NodeObj))
+			{
+				continue;
+			}
+
+			FString NodeType;
+			if (!(*NodeObj)->TryGetStringField(TEXT("type"), NodeType) || NodeType.IsEmpty())
+			{
+				continue;
+			}
+
+			// Skip if we already have this node from /object_info
+			if (NodeDefs.Contains(NodeType))
+			{
+				continue;
+			}
+
+			// Skip built-in LiteGraph types that aren't ComfyUI nodes
+			if (NodeType.StartsWith(TEXT("Reroute")) || NodeType == TEXT("Note") || NodeType == TEXT("PrimitiveNode"))
+			{
+				continue;
+			}
+
+			// Synthesize a node definition from the workflow JSON structure
+			FComfyNodeDef Def;
+			Def.ClassType = NodeType;
+
+			// Build display name: insert spaces before capitals (ClaudeNode → Claude Node)
+			FString DisplayName;
+			for (int32 i = 0; i < NodeType.Len(); i++)
+			{
+				TCHAR Ch = NodeType[i];
+				if (i > 0 && FChar::IsUpper(Ch) && !FChar::IsUpper(NodeType[i - 1]))
+				{
+					DisplayName.AppendChar(TEXT(' '));
+				}
+				DisplayName.AppendChar(Ch);
+			}
+			// Remove trailing "Node" for cleaner display
+			if (DisplayName.EndsWith(TEXT(" Node")))
+			{
+				DisplayName.LeftChopInline(5);
+			}
+			Def.DisplayName = DisplayName;
+
+			// Default category for workflow-discovered nodes
+			Def.Category = TEXT("api node");
+
+			// Parse link-type inputs from the "inputs" array
+			const TArray<TSharedPtr<FJsonValue>>* InputsArray;
+			if ((*NodeObj)->TryGetArrayField(TEXT("inputs"), InputsArray))
+			{
+				for (const TSharedPtr<FJsonValue>& InVal : *InputsArray)
+				{
+					const TSharedPtr<FJsonObject>* InObj;
+					if (!InVal->TryGetObject(InObj))
+					{
+						continue;
+					}
+
+					FComfyInputDef InputDef;
+					(*InObj)->TryGetStringField(TEXT("name"), InputDef.Name);
+					(*InObj)->TryGetStringField(TEXT("type"), InputDef.Type);
+
+					// Use label as the display name if available
+					FString Label;
+					if ((*InObj)->TryGetStringField(TEXT("label"), Label) && !Label.IsEmpty())
+					{
+						InputDef.Name = Label;
+					}
+
+					InputDef.bRequired = false; // Link inputs in workflows are typically optional
+					if (!InputDef.Name.IsEmpty() && !InputDef.Type.IsEmpty())
+					{
+						Def.Inputs.Add(MoveTemp(InputDef));
+					}
+				}
+			}
+
+			// Parse outputs from the "outputs" array
+			const TArray<TSharedPtr<FJsonValue>>* OutputsArray;
+			if ((*NodeObj)->TryGetArrayField(TEXT("outputs"), OutputsArray))
+			{
+				for (const TSharedPtr<FJsonValue>& OutVal : *OutputsArray)
+				{
+					const TSharedPtr<FJsonObject>* OutObj;
+					if (!OutVal->TryGetObject(OutObj))
+					{
+						continue;
+					}
+
+					FComfyOutputDef OutDef;
+					(*OutObj)->TryGetStringField(TEXT("name"), OutDef.Name);
+					(*OutObj)->TryGetStringField(TEXT("type"), OutDef.Type);
+					if (!OutDef.Name.IsEmpty())
+					{
+						Def.Outputs.Add(MoveTemp(OutDef));
+					}
+				}
+			}
+
+			// Infer widget inputs from widgets_values
+			const TArray<TSharedPtr<FJsonValue>>* WidgetValues;
+			if ((*NodeObj)->TryGetArrayField(TEXT("widgets_values"), WidgetValues))
+			{
+				int32 WidgetIdx = 0;
+				for (const TSharedPtr<FJsonValue>& WVal : *WidgetValues)
+				{
+					FComfyInputDef WidgetDef;
+
+					if (WVal->IsNull())
+					{
+						WidgetIdx++;
+						continue;
+					}
+
+					FString StrVal;
+					double NumVal;
+					bool BoolVal;
+
+					if (WVal->TryGetString(StrVal))
+					{
+						// Check if this looks like a control combo (randomize/fixed/increment/decrement)
+						static const TSet<FString> ControlValues = {
+							TEXT("randomize"), TEXT("fixed"), TEXT("increment"), TEXT("decrement")
+						};
+						if (ControlValues.Contains(StrVal.ToLower()))
+						{
+							WidgetDef.Name = FString::Printf(TEXT("control_%d"), WidgetIdx);
+							WidgetDef.Type = TEXT("COMBO");
+							WidgetDef.ComboOptions = { TEXT("fixed"), TEXT("increment"), TEXT("decrement"), TEXT("randomize") };
+							WidgetDef.DefaultString = StrVal;
+						}
+						else
+						{
+							WidgetDef.Name = FString::Printf(TEXT("param_%d"), WidgetIdx);
+							WidgetDef.Type = TEXT("STRING");
+							WidgetDef.DefaultString = StrVal;
+						}
+					}
+					else if (WVal->TryGetNumber(NumVal))
+					{
+						WidgetDef.Name = FString::Printf(TEXT("param_%d"), WidgetIdx);
+						// If the value is a whole number, treat as INT; otherwise FLOAT
+						if (FMath::IsNearlyEqual(NumVal, FMath::RoundToDouble(NumVal)) && FMath::Abs(NumVal) < 2147483647.0)
+						{
+							WidgetDef.Type = TEXT("INT");
+							WidgetDef.DefaultNumber = NumVal;
+							WidgetDef.MinValue = 0;
+							WidgetDef.MaxValue = FMath::Max(NumVal * 4.0, 100.0);
+							WidgetDef.Step = 1.0;
+						}
+						else
+						{
+							WidgetDef.Type = TEXT("FLOAT");
+							WidgetDef.DefaultNumber = NumVal;
+							WidgetDef.MinValue = 0.0;
+							WidgetDef.MaxValue = FMath::Max(NumVal * 2.0, 1.0);
+							WidgetDef.Step = 0.01;
+						}
+					}
+					else if (WVal->TryGetBool(BoolVal))
+					{
+						WidgetDef.Name = FString::Printf(TEXT("param_%d"), WidgetIdx);
+						WidgetDef.Type = TEXT("BOOLEAN");
+						WidgetDef.DefaultBool = BoolVal;
+					}
+					else
+					{
+						WidgetIdx++;
+						continue;
+					}
+
+					WidgetDef.bRequired = true;
+					Def.Inputs.Add(MoveTemp(WidgetDef));
+					WidgetIdx++;
+				}
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("ViewGen: Injected workflow-discovered node '%s' (%s) — %d inputs, %d outputs [from %s]"),
+				*Def.ClassType, *Def.DisplayName, Def.Inputs.Num(), Def.Outputs.Num(), *FileName);
+
+			NodeDefs.Add(NodeType, MoveTemp(Def));
+			InjectedCount++;
+		}
+	}
+
+	if (InjectedCount > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("ViewGen: Injected %d node types from workflow templates in %s"), InjectedCount, *WorkflowDir);
+	}
 }

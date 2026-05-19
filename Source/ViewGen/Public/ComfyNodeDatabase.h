@@ -147,6 +147,14 @@ public:
 	/** Search nodes by name (case-insensitive substring match) */
 	TArray<const FComfyNodeDef*> SearchNodes(const FString& Query) const;
 
+	/**
+	 * Scan workflow JSON files in the given directory and synthesize node definitions
+	 * for any node types not already present in the database.
+	 * This picks up frontend-only API nodes (e.g. Anthropic Claude) that do not appear
+	 * in /object_info because they lack backend Python registrations.
+	 */
+	void InjectNodesFromWorkflows(const FString& WorkflowDir);
+
 	/** Delegate: fired when the database is refreshed */
 	DECLARE_MULTICAST_DELEGATE(FOnDatabaseRefreshed);
 	FOnDatabaseRefreshed OnDatabaseRefreshed;
