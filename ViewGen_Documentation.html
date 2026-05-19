@@ -254,6 +254,7 @@
   <li><b>3D Node Type Compatibility</b> &mdash; The graph editor recognises ComfyUI's 3D file type family (FILE_3D, FILE_3D_GLB, FILE_3D_OBJ, etc.) and comma-separated multi-type inputs, enabling proper connections between 3D generation and save nodes (e.g., Tripo &rarr; SaveGLB).</li>
   <li><b>Resizable Prompt Fields</b> &mdash; Multi-line text areas in the node details panel auto-size to their content and can be freely resized by dragging the grip handle below each field.</li>
   <li><b>Run-to-Node on Video Nodes</b> &mdash; SaveVideo and VHS_VideoCombine nodes display a play button in the header, allowing you to execute the connected subgraph directly, just like SaveImage nodes.</li>
+  <li><b>Edge Auto-Scroll</b> &mdash; Dragging nodes, connections, groups, or box-selecting near any edge of the graph editor automatically scrolls the canvas in that direction, with smooth acceleration that increases as the cursor approaches the edge.</li>
   <li><b>Numeric COMBO Export Fix</b> &mdash; COMBO inputs with numeric options (e.g., fps: [25, 50]) are now correctly exported as integers rather than strings, fixing validation errors with nodes like LTXV Image To Video.</li>
 </ul>
 

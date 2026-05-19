@@ -23,6 +23,7 @@ An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer a
 - **3D Node Compatibility** — The graph editor understands ComfyUI's 3D file type family (FILE_3D, FILE_3D_GLB, FILE_3D_OBJ, FILE_3D_FBX, etc.) and comma-separated multi-type inputs, allowing connections between 3D generation nodes (e.g., Tripo → SaveGLB) that previously required strict type matching.
 - **Resizable Prompt Fields** — Multi-line text areas in the node details panel auto-size to content and can be freely resized by dragging the grip handle below each field.
 - **Run-to-Node on Video Nodes** — SaveVideo and VHS_VideoCombine nodes display a play button in the header, allowing you to execute the connected subgraph directly, just like SaveImage nodes.
+- **Edge Auto-Scroll** — Dragging nodes, connections, groups, or box-selecting near any edge of the graph editor automatically scrolls the canvas in that direction, with smooth acceleration that increases as the cursor approaches the edge.
 - **Quick Render (Sequencer)** — One-click Movie Render Graph rendering of the active Level Sequence directly from the plugin panel.
 - **StoryTools Menu** — Unified top-level editor menu integrating ViewGen with companion plugins (SceneBreak, Gaussian Splat Generator).
 

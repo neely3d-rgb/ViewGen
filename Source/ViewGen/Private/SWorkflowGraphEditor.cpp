@@ -1567,6 +1567,119 @@ TArray<FString> SWorkflowGraphEditor::GetNodeIdsInsideGroup(const FGraphGroup& G
 }
 
 // ============================================================================
+// Tick — Auto-scroll when dragging near edges
+// ============================================================================
+
+void SWorkflowGraphEditor::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+	// Only auto-scroll during active drag operations
+	if (InteractionMode != EInteractionMode::DraggingNode &&
+		InteractionMode != EInteractionMode::DraggingConnection &&
+		InteractionMode != EInteractionMode::DraggingGroup &&
+		InteractionMode != EInteractionMode::BoxSelecting)
+	{
+		return;
+	}
+
+	const FVector2D WidgetSize = AllottedGeometry.GetLocalSize();
+	const FVector2D& MousePos = LastLocalMousePos;
+
+	// Edge margin in pixels — scrolling starts when the cursor enters this band
+	constexpr float EdgeMargin = 40.0f;
+	// Maximum scroll speed in graph-units per second
+	constexpr float MaxScrollSpeed = 800.0f;
+
+	FVector2D ScrollDir = FVector2D::ZeroVector;
+
+	// Left edge
+	if (MousePos.X < EdgeMargin && MousePos.X >= 0.0f)
+	{
+		ScrollDir.X = 1.0f - (MousePos.X / EdgeMargin); // 1.0 at edge, 0.0 at margin boundary
+	}
+	// Right edge
+	else if (MousePos.X > WidgetSize.X - EdgeMargin && MousePos.X <= WidgetSize.X)
+	{
+		ScrollDir.X = -((MousePos.X - (WidgetSize.X - EdgeMargin)) / EdgeMargin);
+	}
+
+	// Top edge
+	if (MousePos.Y < EdgeMargin && MousePos.Y >= 0.0f)
+	{
+		ScrollDir.Y = 1.0f - (MousePos.Y / EdgeMargin);
+	}
+	// Bottom edge
+	else if (MousePos.Y > WidgetSize.Y - EdgeMargin && MousePos.Y <= WidgetSize.Y)
+	{
+		ScrollDir.Y = -((MousePos.Y - (WidgetSize.Y - EdgeMargin)) / EdgeMargin);
+	}
+
+	if (ScrollDir.IsNearlyZero())
+	{
+		return;
+	}
+
+	// Scale by speed, delta time, and inverse zoom (so scrolling feels consistent at all zoom levels)
+	const FVector2D ScrollDelta = ScrollDir * MaxScrollSpeed * InDeltaTime / ZoomLevel;
+	ViewOffset += ScrollDelta;
+
+	// For node/group dragging, update the dragged element position to keep it under the cursor
+	if (InteractionMode == EInteractionMode::DraggingNode)
+	{
+		const FVector2D GraphPos = LocalToGraph(MousePos) - DragOffset;
+		const FVector2D SnappedPos(
+			FMath::RoundToFloat(GraphPos.X / GraphConstants::GridSize) * GraphConstants::GridSize,
+			FMath::RoundToFloat(GraphPos.Y / GraphConstants::GridSize) * GraphConstants::GridSize);
+
+		const int32* IdxPtr = NodeIndexMap.Find(DraggedNodeId);
+		if (IdxPtr)
+		{
+			const FVector2D Delta = SnappedPos - Nodes[*IdxPtr].Position;
+			Nodes[*IdxPtr].Position = SnappedPos;
+
+			// Move all other selected nodes by the same delta
+			for (const FString& SelId : SelectedNodeIds)
+			{
+				if (SelId != DraggedNodeId)
+				{
+					const int32* SelIdx = NodeIndexMap.Find(SelId);
+					if (SelIdx)
+					{
+						Nodes[*SelIdx].Position += Delta;
+					}
+				}
+			}
+		}
+	}
+	else if (InteractionMode == EInteractionMode::DraggingGroup)
+	{
+		if (DraggedGroupIndex >= 0 && DraggedGroupIndex < Groups.Num())
+		{
+			FVector2D GraphPos = LocalToGraph(MousePos) - GroupDragOffset;
+			GraphPos.X = FMath::RoundToFloat(GraphPos.X / GraphConstants::GridSize) * GraphConstants::GridSize;
+			GraphPos.Y = FMath::RoundToFloat(GraphPos.Y / GraphConstants::GridSize) * GraphConstants::GridSize;
+
+			FVector2D Delta = GraphPos - Groups[DraggedGroupIndex].Position;
+			Groups[DraggedGroupIndex].Position = GraphPos;
+
+			// Move all nodes inside the group
+			for (FGraphNode& Node : Nodes)
+			{
+				if (Node.Position.X >= Groups[DraggedGroupIndex].Position.X - Delta.X &&
+					Node.Position.Y >= Groups[DraggedGroupIndex].Position.Y - Delta.Y &&
+					Node.Position.X + Node.Size.X <= Groups[DraggedGroupIndex].Position.X - Delta.X + Groups[DraggedGroupIndex].Size.X &&
+					Node.Position.Y + Node.Size.Y <= Groups[DraggedGroupIndex].Position.Y - Delta.Y + Groups[DraggedGroupIndex].Size.Y)
+				{
+					Node.Position += Delta;
+				}
+			}
+		}
+	}
+	// DraggingConnection and BoxSelecting just need the ViewOffset change — the endpoints
+	// are recalculated from the mouse position each frame anyway.
+}
+
 // OnPaint
 // ============================================================================
 
@@ -2991,6 +3104,7 @@ FReply SWorkflowGraphEditor::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 FReply SWorkflowGraphEditor::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	FVector2D LocalPos = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+	LastLocalMousePos = LocalPos;
 
 	// Handle mesh preview orbit/pan (independent of InteractionMode)
 	if ((bMeshPreviewOrbiting || bMeshPreviewPanning) && !MeshPreviewInteractNodeId.IsEmpty())

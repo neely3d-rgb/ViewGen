@@ -461,6 +461,7 @@ public:
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
 	virtual bool IsInteractable() const override { return true; }
@@ -540,6 +541,9 @@ private:
 	mutable FVector2D ViewOffset = FVector2D::ZeroVector;
 	mutable float ZoomLevel = 1.0f;
 	FVector2D LastMousePos = FVector2D::ZeroVector;
+
+	// Auto-scroll state (edge-drag scrolling)
+	FVector2D LastLocalMousePos = FVector2D::ZeroVector;
 
 	// Node dragging
 	FString DraggedNodeId;
