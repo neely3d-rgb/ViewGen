@@ -144,15 +144,23 @@ SWorkflowGraphEditor::~SWorkflowGraphEditor()
 		FCoreUObjectDelegates::GetPostGarbageCollect().Remove(PostGCDelegateHandle);
 	}
 
-	// Unroot thumbnail textures
+	// Null out all brush resource objects so Slate never resolves a stale
+	// TObjectPtr packed index during shutdown painting (Index >= 0 assert).
+	// Do NOT call ThumbnailBrush.Reset() — SImage widgets still hold raw
+	// pointers from .Image(Brush.Get()); destroying the brush here causes
+	// an access violation when Slate paints during widget teardown.
 	for (FGraphNode& Node : Nodes)
 	{
-		if (Node.ThumbnailTexture && ::IsValid(Node.ThumbnailTexture) && Node.ThumbnailTexture->IsRooted())
+		if (Node.ThumbnailBrush.IsValid())
+		{
+			Node.ThumbnailBrush->SetResourceObject(nullptr);
+		}
+		if (Node.ThumbnailTexture && Node.ThumbnailTexture->IsValidLowLevelFast(false) && Node.ThumbnailTexture->IsRooted())
 		{
 			Node.ThumbnailTexture->RemoveFromRoot();
 		}
 		Node.ThumbnailTexture = nullptr;
-		Node.ThumbnailBrush.Reset();
+		// Let shared pointer die naturally when widget tree is torn down
 	}
 }
 
@@ -163,7 +171,7 @@ void SWorkflowGraphEditor::OnPostGarbageCollect()
 	// Re-set ResourceObject from stored raw pointers to create fresh packed handles.
 	for (FGraphNode& Node : Nodes)
 	{
-		if (Node.ThumbnailBrush.IsValid() && Node.ThumbnailTexture && ::IsValid(Node.ThumbnailTexture))
+		if (Node.ThumbnailBrush.IsValid() && Node.ThumbnailTexture && Node.ThumbnailTexture->IsValidLowLevelFast(false))
 		{
 			Node.ThumbnailBrush->SetResourceObject(Node.ThumbnailTexture);
 		}
@@ -1275,7 +1283,7 @@ TArray<TSharedPtr<FJsonObject>> SWorkflowGraphEditor::ExportStagedWorkflows(
 		TArray<FString> Queue = Seeds;
 		while (Queue.Num() > 0)
 		{
-			FString Current = Queue.Pop(false);
+			FString Current = Queue.Pop(EAllowShrinking::No);
 			if (Visited.Contains(Current)) continue;
 			Visited.Add(Current);
 
@@ -4984,7 +4992,30 @@ TSharedPtr<FJsonObject> SWorkflowGraphEditor::ExportWorkflowJSON(bool* OutNeedsV
 
 			if (bIsCombo)
 			{
-				InputsObj->SetStringField(Widget.Key, Value);
+				// COMBO options in ComfyUI can be strings OR integers. The API
+				// validates by value AND type, so "25" (string) != 25 (int).
+				// If all options in the COMBO are numeric, send as a number;
+				// otherwise send as a string.
+				bool bNumericCombo = false;
+				if (WidgetDef && WidgetDef->ComboOptions.Num() > 0)
+				{
+					bNumericCombo = true;
+					for (const FString& Opt : WidgetDef->ComboOptions)
+					{
+						if (!Opt.IsNumeric()) { bNumericCombo = false; break; }
+					}
+				}
+				if (bNumericCombo && Value.IsNumeric())
+				{
+					if (Value.Contains(TEXT(".")))
+						InputsObj->SetNumberField(Widget.Key, FCString::Atod(*Value));
+					else
+						InputsObj->SetNumberField(Widget.Key, (int64)FCString::Atoi(*Value));
+				}
+				else
+				{
+					InputsObj->SetStringField(Widget.Key, Value);
+				}
 			}
 			// Try to detect numeric values
 			else if (Value.IsNumeric())

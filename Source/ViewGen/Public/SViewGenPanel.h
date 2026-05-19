@@ -340,6 +340,9 @@ private:
 	/** Thumbnail brush for the LoadImage node preview in the details panel */
 	TSharedPtr<FSlateBrush> NodeDetailsThumbnailBrush;
 
+	/** Per-widget text area heights for resizable prompt fields (key = NodeId::WidgetName) */
+	TMap<FString, float> TextAreaHeights;
+
 
 	/** Perform a one-shot prompt sync to the Video tab and all graph editor prompt nodes */
 	void PerformPromptSync();

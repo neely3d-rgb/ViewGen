@@ -57,6 +57,154 @@
 
 #define LOCTEXT_NAMESPACE "SViewGenPanel"
 
+// ============================================================================
+// Resizable Text Area Handle — drag to resize prompt text boxes
+// ============================================================================
+
+typedef TMap<FString, float> FTextAreaHeightMap;
+
+class STextAreaResizeHandle : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(STextAreaResizeHandle) {}
+		SLATE_ARGUMENT(FTextAreaHeightMap*, HeightMap)
+		SLATE_ARGUMENT(FString, HeightKey)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		HeightMap = InArgs._HeightMap;
+		HeightKey = InArgs._HeightKey;
+
+		ChildSlot
+		[
+			SNew(SBox)
+			.HeightOverride(6.0f)
+			.Cursor(EMouseCursor::ResizeUpDown)
+			[
+				SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+				.BorderBackgroundColor(FLinearColor(0.25f, 0.25f, 0.30f, 0.4f))
+				.Padding(0.0f)
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SBox)
+					.WidthOverride(30.0f)
+					.HeightOverride(2.0f)
+					[
+						SNew(SBorder)
+						.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+						.BorderBackgroundColor(FLinearColor(0.5f, 0.5f, 0.55f, 0.6f))
+					]
+				]
+			]
+		];
+	}
+
+	virtual FReply OnMouseButtonDown(const FGeometry& Geom, const FPointerEvent& Event) override
+	{
+		if (Event.GetEffectingButton() == EKeys::LeftMouseButton && HeightMap)
+		{
+			DragStartY = Event.GetScreenSpacePosition().Y;
+			float* H = HeightMap->Find(HeightKey);
+			DragStartHeight = H ? *H : 80.0f;
+			return FReply::Handled().CaptureMouse(SharedThis(this));
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseMove(const FGeometry& Geom, const FPointerEvent& Event) override
+	{
+		if (HasMouseCapture() && HeightMap)
+		{
+			float Delta = Event.GetScreenSpacePosition().Y - DragStartY;
+			float NewHeight = FMath::Clamp(DragStartHeight + Delta, 40.0f, 800.0f);
+			HeightMap->Add(HeightKey, NewHeight);
+			return FReply::Handled();
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseButtonUp(const FGeometry& Geom, const FPointerEvent& Event) override
+	{
+		if (HasMouseCapture())
+		{
+			return FReply::Handled().ReleaseMouseCapture();
+		}
+		return FReply::Unhandled();
+	}
+
+private:
+	FTextAreaHeightMap* HeightMap = nullptr;
+	FString HeightKey;
+	float DragStartY = 0.0f;
+	float DragStartHeight = 80.0f;
+};
+
+// ============================================================================
+// Viewport/Depth Capture Persistence (static helpers — must precede Construct)
+// ============================================================================
+
+static void SaveCaptureToDisk(UTexture2D* Texture, const TCHAR* Filename)
+{
+	if (!Texture || !::IsValid(Texture)) return;
+
+	int32 W = Texture->GetSizeX();
+	int32 H = Texture->GetSizeY();
+	if (W <= 0 || H <= 0) return;
+
+	FTexturePlatformData* PD = Texture->GetPlatformData();
+	if (!PD || PD->Mips.Num() == 0) return;
+
+	TArray<FColor> Pixels;
+	Pixels.SetNum(W * H);
+	const void* Data = PD->Mips[0].BulkData.LockReadOnly();
+	FMemory::Memcpy(Pixels.GetData(), Data, W * H * sizeof(FColor));
+	PD->Mips[0].BulkData.Unlock();
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(EImageFormat::PNG);
+	if (!Wrapper.IsValid()) return;
+
+	if (!Wrapper->SetRaw(Pixels.GetData(), W * H * 4, W, H, ERGBFormat::BGRA, 8)) return;
+
+	TArray64<uint8> CompressedData = Wrapper->GetCompressed(90);
+	if (CompressedData.Num() == 0) return;
+
+	FString Path = FPaths::ProjectSavedDir() / TEXT("ViewGen") / Filename;
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	FFileHelper::SaveArrayToFile(CompressedData, *Path);
+}
+
+static UTexture2D* LoadCaptureFromDisk(const TCHAR* Filename)
+{
+	FString Path = FPaths::ProjectSavedDir() / TEXT("ViewGen") / Filename;
+	TArray<uint8> FileData;
+	if (!FFileHelper::LoadFileToArray(FileData, *Path)) return nullptr;
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(EImageFormat::PNG);
+	if (!Wrapper.IsValid() || !Wrapper->SetCompressed(FileData.GetData(), FileData.Num())) return nullptr;
+
+	TArray<uint8> RawPixels;
+	if (!Wrapper->GetRaw(ERGBFormat::BGRA, 8, RawPixels)) return nullptr;
+
+	int32 W = Wrapper->GetWidth();
+	int32 H = Wrapper->GetHeight();
+	if (W <= 0 || H <= 0) return nullptr;
+
+	UTexture2D* Tex = UTexture2D::CreateTransient(W, H, PF_B8G8R8A8);
+	if (!Tex) return nullptr;
+
+	void* MipData = Tex->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(MipData, RawPixels.GetData(), RawPixels.Num());
+	Tex->GetPlatformData()->Mips[0].BulkData.Unlock();
+	Tex->UpdateResource();
+	Tex->AddToRoot();
+	return Tex;
+}
+
 void SViewGenPanel::Construct(const FArguments& InArgs)
 {
 	// Initialize subsystems
@@ -503,6 +651,35 @@ SViewGenPanel::~SViewGenPanel()
 		HttpClient->CancelRequest();
 	}
 
+	// ----------------------------------------------------------------
+	// NULL OUT all FSlateBrush resource objects FIRST.
+	// During editor shutdown, Slate widgets may still attempt to paint
+	// after UObjects are destroyed. The FSlateBrush holds a TObjectPtr
+	// whose packed index becomes stale, causing the Index >= 0 assert
+	// in UObjectArray::IndexToObject. Clearing the resource prevents
+	// Slate from ever resolving a dead handle.
+	// ----------------------------------------------------------------
+	auto NullBrush = [](const TSharedPtr<FSlateBrush>& B)
+	{
+		if (B.IsValid()) { B->SetResourceObject(nullptr); }
+	};
+
+	NullBrush(ViewportThumbnailBrush);
+	NullBrush(DepthThumbnailBrush);
+	NullBrush(PreviewBrush);
+	NullBrush(NodeDetailsThumbnailBrush);
+	NullBrush(VideoSourceBrush);
+
+	for (FHistoryEntry& Entry : ImageHistory)
+	{
+		NullBrush(Entry.Brush);
+	}
+
+	for (FSAM3Segment& Seg : SAM3Segments)
+	{
+		NullBrush(Seg.Brush);
+	}
+
 	// Clean up segmentation capture FIRST — it owns textures that may also
 	// be referenced in ImageHistory. Clearing it here prevents double-unroot.
 	SegmentationCapture.Reset();
@@ -552,7 +729,10 @@ static void RefreshBrushFromRawTexture(const TSharedPtr<FSlateBrush>& Brush, UOb
 {
 	if (!Brush.IsValid()) return;
 
-	if (RawTexture && ::IsValid(RawTexture))
+	// During editor shutdown, UObjects may already be destroyed.
+	// Use IsValidLowLevelFast (pointer alignment check only) instead of
+	// ::IsValid() which accesses GUObjectArray and can assert/crash.
+	if (RawTexture && RawTexture->IsValidLowLevelFast(false))
 	{
 		Brush->SetResourceObject(RawTexture);
 	}
@@ -6488,7 +6668,7 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					SNew(SEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6532,7 +6712,7 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					SNew(SEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6570,7 +6750,7 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					SNew(SEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6732,7 +6912,7 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					SNew(SEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6770,7 +6950,7 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					SNew(SEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6808,7 +6988,7 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 					SNew(SEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6832,21 +7012,35 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 				]
 			];
 		}
-		// --- STRING (multi-line text box — great for prompts) ---
+		// --- STRING (multi-line text box — great for prompts, resizable) ---
 		else
 		{
+			FString HeightKey = CapturedNodeId + TEXT("::") + CapturedWidgetName;
+			if (!TextAreaHeights.Contains(HeightKey))
+			{
+				// Compute initial height from content (line count + wrap estimate)
+				int32 LineCount = 1;
+				for (const TCHAR& Ch : *ValuePtr) { if (Ch == TEXT('\n')) ++LineCount; }
+				int32 EstLines = FMath::Max(LineCount, (int32)(ValuePtr->Len() / 40) + 1);
+				TextAreaHeights.Add(HeightKey, FMath::Clamp(EstLines * 18.0f + 16.0f, 60.0f, 400.0f));
+			}
+
 			NodeDetailsPanel->AddSlot()
-			.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			.Padding(0.0f, 0.0f, 0.0f, 0.0f)
 			[
 				SNew(SBox)
-				.MinDesiredHeight(40.0f)
-				.MaxDesiredHeight(120.0f)
+				.MinDesiredHeight(60.0f)
+				.MaxDesiredHeight_Lambda([this, HeightKey]()
+				{
+					const float* H = TextAreaHeights.Find(HeightKey);
+					return H ? *H : 80.0f;
+				})
 				[
 					SNew(SMultiLineEditableTextBox)
 					.Text(FText::FromString(*ValuePtr))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 					.AutoWrapText(true)
-					.OnTextCommitted_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText, ETextCommit::Type)
+					.OnTextChanged_Lambda([this, CapturedNodeId, CapturedWidgetName](const FText& NewText)
 					{
 						if (GraphEditor.IsValid())
 						{
@@ -6854,6 +7048,15 @@ void SViewGenPanel::RebuildNodeDetailsPanel()
 						}
 					})
 				]
+			];
+
+			// Drag handle to resize the text area above
+			NodeDetailsPanel->AddSlot()
+			.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+			[
+				SNew(STextAreaResizeHandle)
+				.HeightMap(&TextAreaHeights)
+				.HeightKey(HeightKey)
 			];
 		}
 	}
@@ -10614,10 +10817,14 @@ TSharedRef<SWidget> SViewGenPanel::BuildResultGalleryPanel()
 					.ToolTipText(LOCTEXT("ClearResultsTip", "Clear all results"))
 					.OnClicked_Lambda([this]() -> FReply
 					{
-						// Unroot all thumbnail textures to prevent memory leaks
+						// Null out brush resources and unroot textures
 						for (FHistoryEntry& Entry : ImageHistory)
 						{
-							if (Entry.Texture && ::IsValid(Entry.Texture) && Entry.Texture->IsRooted())
+							if (Entry.Brush.IsValid())
+							{
+								Entry.Brush->SetResourceObject(nullptr);
+							}
+							if (Entry.Texture && Entry.Texture->IsValidLowLevelFast(false) && Entry.Texture->IsRooted())
 							{
 								Entry.Texture->RemoveFromRoot();
 							}
@@ -10625,6 +10832,8 @@ TSharedRef<SWidget> SViewGenPanel::BuildResultGalleryPanel()
 						ImageHistory.Empty();
 						HistoryIndex = -1;
 						RebuildResultGallery();
+						RebuildGraphTabGallery();
+						SaveResultHistory();
 						// Clear the main preview image
 						if (PreviewBrush.IsValid())
 						{
@@ -10875,7 +11084,13 @@ void SViewGenPanel::RebuildResultGallery()
 							if (ImageHistory.IsValidIndex(EntryIndex))
 							{
 								FHistoryEntry& Entry = ImageHistory[EntryIndex];
-								if (Entry.Texture && ::IsValid(Entry.Texture) && Entry.Texture->IsRooted())
+								// Null out the brush resource BEFORE removing the entry,
+								// so any still-painting SImage widgets won't access a dead texture.
+								if (Entry.Brush.IsValid())
+								{
+									Entry.Brush->SetResourceObject(nullptr);
+								}
+								if (Entry.Texture && Entry.Texture->IsValidLowLevelFast(false) && Entry.Texture->IsRooted())
 								{
 									Entry.Texture->RemoveFromRoot();
 								}
@@ -10905,6 +11120,8 @@ void SViewGenPanel::RebuildResultGallery()
 								}
 
 								RebuildResultGallery();
+								RebuildGraphTabGallery();
+								SaveResultHistory();
 							}
 							return FReply::Handled();
 						})
@@ -13729,69 +13946,6 @@ AActor* SViewGenPanel::PlaceAssetInLevel(const FString& AssetContentPath)
 
 	UE_LOG(LogTemp, Warning, TEXT("ViewGen MeshyImport: Could not load or place asset at path: %s"), *AssetContentPath);
 	return nullptr;
-}
-
-// ============================================================================
-// Viewport/Depth Capture Persistence
-// ============================================================================
-
-static void SaveCaptureToDisk(UTexture2D* Texture, const TCHAR* Filename)
-{
-	if (!Texture || !::IsValid(Texture)) return;
-
-	int32 W = Texture->GetSizeX();
-	int32 H = Texture->GetSizeY();
-	if (W <= 0 || H <= 0) return;
-
-	FTexturePlatformData* PD = Texture->GetPlatformData();
-	if (!PD || PD->Mips.Num() == 0) return;
-
-	TArray<FColor> Pixels;
-	Pixels.SetNum(W * H);
-	const void* Data = PD->Mips[0].BulkData.LockReadOnly();
-	FMemory::Memcpy(Pixels.GetData(), Data, W * H * sizeof(FColor));
-	PD->Mips[0].BulkData.Unlock();
-
-	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(EImageFormat::PNG);
-	if (!Wrapper.IsValid()) return;
-
-	if (!Wrapper->SetRaw(Pixels.GetData(), W * H * 4, W, H, ERGBFormat::BGRA, 8)) return;
-
-	TArray<uint8> CompressedData;
-	if (!Wrapper->GetCompressed(CompressedData, 90)) return;
-
-	FString Path = FPaths::ProjectSavedDir() / TEXT("ViewGen") / Filename;
-	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
-	FFileHelper::SaveArrayToFile(CompressedData, *Path);
-}
-
-static UTexture2D* LoadCaptureFromDisk(const TCHAR* Filename)
-{
-	FString Path = FPaths::ProjectSavedDir() / TEXT("ViewGen") / Filename;
-	TArray<uint8> FileData;
-	if (!FFileHelper::LoadFileToArray(FileData, *Path)) return nullptr;
-
-	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	TSharedPtr<IImageWrapper> Wrapper = IWM.CreateImageWrapper(EImageFormat::PNG);
-	if (!Wrapper.IsValid() || !Wrapper->SetCompressed(FileData.GetData(), FileData.Num())) return nullptr;
-
-	TArray<uint8> RawPixels;
-	if (!Wrapper->GetRaw(ERGBFormat::BGRA, 8, RawPixels)) return nullptr;
-
-	int32 W = Wrapper->GetWidth();
-	int32 H = Wrapper->GetHeight();
-	if (W <= 0 || H <= 0) return nullptr;
-
-	UTexture2D* Tex = UTexture2D::CreateTransient(W, H, PF_B8G8R8A8);
-	if (!Tex) return nullptr;
-
-	void* MipData = Tex->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
-	FMemory::Memcpy(MipData, RawPixels.GetData(), RawPixels.Num());
-	Tex->GetPlatformData()->Mips[0].BulkData.Unlock();
-	Tex->UpdateResource();
-	Tex->AddToRoot();
-	return Tex;
 }
 
 // ============================================================================

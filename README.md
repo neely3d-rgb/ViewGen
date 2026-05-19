@@ -21,6 +21,8 @@ An Unreal Engine 5.7 editor plugin that captures the viewport and depth buffer a
 - **Preset System** — Save and load generation presets including prompt, checkpoint, resolution, and all mode-specific settings.
 - **Session Persistence** — Viewport captures, depth maps, generation results, graph editor thumbnails, and LoadImage node previews all persist across editor restarts. No ComfyUI connection required for cached data to restore. Captures are saved to `{ProjectSaved}/ViewGen/` as PNG files and result history is serialized to JSON.
 - **3D Node Compatibility** — The graph editor understands ComfyUI's 3D file type family (FILE_3D, FILE_3D_GLB, FILE_3D_OBJ, FILE_3D_FBX, etc.) and comma-separated multi-type inputs, allowing connections between 3D generation nodes (e.g., Tripo → SaveGLB) that previously required strict type matching.
+- **Resizable Prompt Fields** — Multi-line text areas in the node details panel auto-size to content and can be freely resized by dragging the grip handle below each field.
+- **Run-to-Node on Video Nodes** — SaveVideo and VHS_VideoCombine nodes display a play button in the header, allowing you to execute the connected subgraph directly, just like SaveImage nodes.
 - **Quick Render (Sequencer)** — One-click Movie Render Graph rendering of the active Level Sequence directly from the plugin panel.
 - **StoryTools Menu** — Unified top-level editor menu integrating ViewGen with companion plugins (SceneBreak, Gaussian Splat Generator).
 

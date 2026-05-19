@@ -195,7 +195,7 @@ struct FGraphNode
 		static const TSet<FString> RunnableTypes = {
 			TEXT("SaveImage"), TEXT("PreviewImage"), TEXT("SaveAnimatedWEBP"),
 			TEXT("SaveAnimatedPNG"), TEXT("SaveWEBM"), TEXT("SaveImageWebsocket"),
-			TEXT("VHS_VideoCombine")
+			TEXT("VHS_VideoCombine"), TEXT("SaveVideo")
 		};
 		return RunnableTypes.Contains(ClassType);
 	}
